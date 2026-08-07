@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """弧光成就插件：击杀成就统计、玩家/OP 面板，依赖 arc_core 头衔与经济 API。"""
-from __future__ import annotations
 
 import json
 import shutil
