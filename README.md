@@ -1,0 +1,112 @@
+# EndStone ARC Achievement / 弧光成就
+
+[![版本](https://img.shields.io/badge/版本-0.1.0-blue.svg)](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Achievement)
+[![EndStone](https://img.shields.io/badge/EndStone-0.10+-green.svg)](https://github.com/EndstoneMC/endstone)
+[![依赖](https://img.shields.io/badge/依赖-arc__core-orange.svg)](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Core-Plugin)
+
+弧光系列成就插件：可配置击杀类成就、玩家进度面板与 OP 管理界面。头衔解锁与金钱/物品奖励委托 **[弧光核心](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Core-Plugin)**（`arc_core`）。
+
+## 命名约定
+
+| 项 | 值 |
+|---|---|
+| 包名 | `endstone_arc_achievement` |
+| Plugin id | `arc_achievement` |
+| 数据目录 | `plugins/ARCAchievement/` |
+| 依赖 | 必须安装并启用 `arc_core` |
+
+## 功能特性
+
+- **击杀成就**：`kill_entity`（单种生物，`*` 表示任意生物累计）、`kill_entity_sum`（多种生物击杀数相加）
+- **JSON 配置**：定义保存在 `plugins/ARCAchievement/achievements.json`，可热改后重启/重载逻辑读取
+- **进度与完成标记**：写入核心 SQLite 表 `player_achievement_stats`（`kill_total` / `kill:...` / `ach_unlock:<头衔>`），与拆分前同一库，进度不丢
+- **玩家面板**：已解锁 / 未解锁列表与条件说明；隐藏成就未达成前不展示
+- **OP 面板**：新建成就、编辑条件、启用/隐藏/删除；一键写入内置击杀成就包（含恐怖服包）
+- **解锁奖励**：达成后调用核心 `api_unlock_title`，按头衔定义发放金钱与物品，并可全服通告 + QQ Sync `custom` 事件
+- **菜单集成**：检测到本插件时，弧光核心「我的信息 → 我的成就」与 OP「成就管理」自动出现
+
+## 安装
+
+1. 确保已安装 **弧光核心** `endstone_arc_core`（`arc_core`）
+2. 将本插件 `.whl` 放入 EndStone 服务器的 `plugins/` 目录（与其它弧光插件同级）
+3. 重启服务器；首次启动会创建 `plugins/ARCAchievement/`
+
+### 从旧版核心迁移
+
+若服务器上仍有 `plugins/ARCCore/achievements.json`，首次启用本插件时会**自动复制**到 `plugins/ARCAchievement/achievements.json`（仅当目标文件尚不存在）。击杀统计表仍在核心数据库中，无需手工迁库。
+
+可选：将仓库内 `dist/ARCAchievement/ZH-CN.txt` 复制到 `plugins/ARCAchievement/`（插件也会尝试从包内自带语言文件初始化）。
+
+### 本地构建
+
+```bash
+pip install build
+python -m build
+# 输出：dist/endstone_arc_achievement-<version>-py2.py3-none-any.whl
+```
+
+## 命令
+
+| 命令 | 权限 | 说明 |
+|------|------|------|
+| `/ach` | 所有玩家 | 打开「我的成就」 |
+| `/achop` | OP | 打开成就管理面板 |
+
+## 配置文件
+
+运行时目录：`plugins/ARCAchievement/`
+
+| 文件 | 说明 |
+|------|------|
+| `achievements.json` | 成就定义（名称、解锁头衔、条件列表、启用/隐藏等） |
+| `ZH-CN.txt` | 界面文案（`KEY=VALUE`） |
+
+成就 JSON 结构概要：
+
+```json
+{
+  "version": 1,
+  "achievements": [
+    {
+      "name": "赶尸人",
+      "unlock_title": "赶尸人",
+      "enabled": true,
+      "if_hidden": false,
+      "logic": "all",
+      "conditions": [
+        {
+          "id": 1,
+          "type": "kill_entity",
+          "condition_type": "kill_entity",
+          "target_id": "minecraft:zombie",
+          "required_count": 100
+        }
+      ]
+    }
+  ]
+}
+```
+
+奖励（金钱/物品）请在弧光核心 **OP 面板 → 头衔管理 → 头衔属性** 中配置对应头衔；本插件只负责「条件达成 → 解锁头衔」。
+
+## 依赖的核心 API
+
+通过 `server.get_plugin("arc_core")` 调用：
+
+- `api_unlock_title` / `api_has_unlocked_title`
+- `api_set_title_definition` / `api_ensure_title_definition` / `api_get_title_definition`
+- 复用 `arc_core.database_manager` 读写 `player_achievement_stats`
+
+未找到 `arc_core` 时，本插件会打错误日志并禁用成就逻辑。
+
+## 与弧光核心的关系
+
+| 能力 | 所在插件 |
+|------|----------|
+| 头衔定义、解锁、发奖、聊天展示 | `arc_core` |
+| 成就条件、击杀统计、成就 UI | `arc_achievement` |
+| 击杀赏金（`kill_reward.txt`） | `arc_core`（与成就独立） |
+
+## 许可证
+
+见 [LICENSE](LICENSE)。

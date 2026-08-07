@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "endstone_arc_achievement"
+version = "0.1.0"
+dependencies = []
+authors = [
+    { name = "DEVILENMO", email = "DEVILENMO@gmail.com" },
+]
+description = "ARC Achievement plugin for EndStone — kill achievements, titles via arc_core."
+readme = "README.md"
+license = { file = "LICENSE" }
+keywords = ["endstone", "plugin", "achievement", "arc"]
+
+[project.urls]
+Homepage = "https://github.com/ARC-Minecraft/EndstoneMC-ARC-Achievement"
+
+[project.entry-points."endstone"]
+arc_achievement = "endstone_arc_achievement:ARCAchievementPlugin"
