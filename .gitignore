@@ -4,8 +4,11 @@ __pycache__/
 *$py.class
 .Python
 build/
-dist/*.whl
+# dist/: track latest *.whl only; ignore other packaging artifacts
 dist/*.tar.gz
+dist/*.tar.bz2
+dist/*.zip
+dist/*.egg
 *.egg-info/
 .eggs/
 .venv/
