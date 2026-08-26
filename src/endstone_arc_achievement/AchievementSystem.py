@@ -720,7 +720,9 @@ class AchievementSystem:
         except Exception:
             return set()
 
-    def player_has_unlocked_title(self, xuid: str, unlock_title: str) -> bool:
+    def player_has_unlocked_title(
+        self, xuid: str, unlock_title: str, rarity: Optional[str] = None
+    ) -> bool:
         xs = str(xuid or "").strip()
         ut = str(unlock_title or "").strip()
         if not xs or not ut:
@@ -728,7 +730,10 @@ class AchievementSystem:
         if self._has_achievement_unlock_stat(xs, ut):
             return True
         try:
-            return bool(self.title_system.has_unlocked_title_by_xuid(xs, ut))
+            try:
+                return bool(self.title_system.has_unlocked_title_by_xuid(xs, ut, rarity))
+            except TypeError:
+                return bool(self.title_system.has_unlocked_title_by_xuid(xs, ut))
         except Exception:
             return False
 
@@ -834,19 +839,36 @@ class AchievementSystem:
                 pass
 
     def _ensure_unlock_title_registered(self, achievement_data: Dict[str, Any]) -> None:
-        """解锁前：若核心未注册该头衔，则仅写入稀有度/介绍等基本属性。"""
+        """解锁前：按名称+稀有度完整检索；未注册则写入基本属性。"""
         unlock_title = str(achievement_data.get("unlock_title") or "").strip()
         if not unlock_title:
             return
         fields = self._achievement_reward_fields(achievement_data)
+        rarity = fields.get("rarity") or "普通"
+        description = fields.get("description") or ""
         has_def = False
         try:
             has_fn = getattr(self.title_system, "has_title_definition", None)
             if callable(has_fn):
-                has_def = bool(has_fn(unlock_title))
+                try:
+                    has_def = bool(has_fn(unlock_title, rarity))
+                except TypeError:
+                    defn = self.title_system.get_title_definition(unlock_title)
+                    has_def = bool(
+                        defn
+                        and str(defn.get("rarity") or "普通").strip() == str(rarity).strip()
+                    )
             else:
                 get_defn = getattr(self.title_system, "get_title_definition", None)
-                has_def = bool(callable(get_defn) and get_defn(unlock_title))
+                if callable(get_defn):
+                    try:
+                        defn = get_defn(unlock_title, rarity)
+                    except TypeError:
+                        defn = get_defn(unlock_title)
+                    has_def = bool(
+                        defn
+                        and str(defn.get("rarity") or "普通").strip() == str(rarity).strip()
+                    )
         except Exception:
             has_def = False
         if has_def:
@@ -854,8 +876,8 @@ class AchievementSystem:
         try:
             self.title_system.ensure_title_definition(
                 unlock_title,
-                fields.get("rarity") or "普通",
-                fields.get("description") or "",
+                rarity,
+                description,
                 0.0,
                 [],
             )
@@ -915,13 +937,18 @@ class AchievementSystem:
         enabled = bool(achievement_data.get("enabled", True))
         if not unlock_title or not enabled:
             return
-        if self.player_has_unlocked_title(xuid, unlock_title):
+        fields = self._achievement_reward_fields(achievement_data)
+        rarity = fields.get("rarity") or "普通"
+        if self.player_has_unlocked_title(xuid, unlock_title, rarity):
             return
         if not self._achievement_conditions_met(xuid, achievement_data):
             return
         self._ensure_unlock_title_registered(achievement_data)
         try:
-            self.unlock_title_func(player, unlock_title)
+            try:
+                self.unlock_title_func(player, unlock_title, rarity)
+            except TypeError:
+                self.unlock_title_func(player, unlock_title)
         except Exception:
             pass
         first_unlock = self._mark_achievement_unlock_stat(xuid, unlock_title)

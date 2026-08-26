@@ -35,14 +35,31 @@ class _TitleBridge:
     def __init__(self, arc):
         self._arc = arc
 
-    def has_unlocked_title_by_xuid(self, xuid: str, title: str) -> bool:
-        return bool(self._arc.api_has_unlocked_title(title, xuid=str(xuid or "")))
+    def has_unlocked_title_by_xuid(self, xuid: str, title: str, rarity: str = "普通") -> bool:
+        try:
+            return bool(
+                self._arc.api_has_unlocked_title(
+                    title, xuid=str(xuid or ""), rarity=rarity
+                )
+            )
+        except TypeError:
+            # 兼容旧核心：无 rarity 参数
+            return bool(self._arc.api_has_unlocked_title(title, xuid=str(xuid or "")))
 
-    def has_title_definition(self, title: str) -> bool:
+    def has_title_definition(self, title: str, rarity: str = "普通") -> bool:
         has_fn = getattr(self._arc, "api_has_title_definition", None)
         if callable(has_fn):
-            return bool(has_fn(title))
-        return self.get_title_definition(title) is not None
+            try:
+                return bool(has_fn(title, rarity))
+            except TypeError:
+                defn = self.get_title_definition(title, rarity)
+                if defn is None:
+                    return False
+                return str(defn.get("rarity") or "普通").strip() == str(rarity or "普通").strip()
+        defn = self.get_title_definition(title, rarity)
+        if defn is None:
+            return False
+        return str(defn.get("rarity") or "普通").strip() == str(rarity or "普通").strip()
 
     def ensure_title_definition(
         self,
@@ -52,7 +69,6 @@ class _TitleBridge:
         reward_money: float = 0.0,
         reward_items=None,
     ) -> bool:
-        # 成就侧只注册头衔基本属性；金钱/物品奖励由成就插件自行发放
         _ = reward_money
         _ = reward_items
         return bool(
@@ -72,8 +88,14 @@ class _TitleBridge:
             )
         )
 
-    def get_title_definition(self, title: str):
-        return self._arc.api_get_title_definition(title)
+    def get_title_definition(self, title: str, rarity: str = None):
+        get_fn = getattr(self._arc, "api_get_title_definition", None)
+        if not callable(get_fn):
+            return None
+        try:
+            return get_fn(title, rarity)
+        except TypeError:
+            return get_fn(title)
 
 
 class ARCAchievementPlugin(Plugin):
@@ -120,11 +142,18 @@ class ARCAchievementPlugin(Plugin):
             self.logger.error("[ARCAchievement] 未找到 arc_core，成就插件已禁用相关功能。")
             return
         self._title_bridge = _TitleBridge(self.arc_core)
+
+        def _unlock_title_with_rarity(player, title, rarity="普通"):
+            try:
+                return self.arc_core.api_unlock_title(player, title, rarity=rarity)
+            except TypeError:
+                return self.arc_core.api_unlock_title(player, title)
+
         self.achievement_system = AchievementSystem(
             self.arc_core.database_manager,
             self._title_bridge,
             self.language_manager,
-            self.arc_core.api_unlock_title,
+            _unlock_title_with_rarity,
             MAIN_PATH,
             self._announce_achievement_unlock,
             grant_money_func=self.arc_core.increase_player_money,

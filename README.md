@@ -1,7 +1,7 @@
 # EndStone ARC Achievement / 弧光成就
 
 [![Codacy Grade](https://app.codacy.com/project/badge/Grade/4c54f9ddc5e54246aea130507b71321e)](https://app.codacy.com/gh/ARC-Minecraft/EndstoneMC-ARC-Achievement/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
-[![版本](https://img.shields.io/badge/版本-0.1.3-blue.svg)](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Achievement)
+[![版本](https://img.shields.io/badge/版本-0.1.4-blue.svg)](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Achievement)
 [![EndStone](https://img.shields.io/badge/EndStone-0.10+-green.svg)](https://github.com/EndstoneMC/endstone)
 [![依赖](https://img.shields.io/badge/依赖-arc__core-orange.svg)](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Core-Plugin)
 
@@ -14,7 +14,7 @@
 | 包名 | `endstone_arc_achievement` |
 | Plugin id | `arc_achievement` |
 | 数据目录 | `plugins/ARCAchievement/` |
-| 依赖 | 必须安装并启用 `arc_core`（建议 ≥ 0.9.6） |
+| 依赖 | 必须安装并启用 `arc_core`（建议 ≥ 0.9.7） |
 
 ## 功能特性
 
@@ -23,12 +23,12 @@
 - **进度与完成标记**：写入核心 SQLite 表 `player_achievement_stats`（`kill_total` / `kill:...` / `ach_unlock:<头衔>`），与拆分前同一库，进度不丢
 - **玩家面板**：已解锁 / 未解锁列表与条件说明；隐藏成就未达成前不展示
 - **OP 面板**：新建成就、编辑条件与奖励、启用/隐藏/删除；一键写入内置击杀成就包（含恐怖服包）
-- **解锁流程**：查核心是否已注册头衔 → 未注册则 `api_ensure_title_definition` 写入基本属性 → `api_unlock_title` → 本插件发放金钱/物品 + toast；全服通告 + QQ Sync `custom` 事件
+- **解锁流程**：按「头衔名+稀有度」查核心是否已注册 → 未注册则 `api_ensure_title_definition` → `api_unlock_title(..., rarity=)` → 本插件发放金钱/物品 + toast；全服通告 + QQ Sync `custom` 事件
 - **菜单集成**：检测到本插件时，弧光核心「我的信息 → 我的成就」与 OP「成就管理」自动出现
 
 ## 安装
 
-1. 确保已安装 **弧光核心** `endstone_arc_core`（`arc_core`，建议 ≥ 0.9.6）
+1. 确保已安装 **弧光核心** `endstone_arc_core`（`arc_core`，建议 ≥ 0.9.7）
 2. 将本插件 `.whl` 放入 EndStone 服务器的 `plugins/` 目录（与其它弧光插件同级）
 3. 重启服务器；首次启动会创建 `plugins/ARCAchievement/`
 
@@ -100,8 +100,8 @@ python -m build --wheel
 
 通过 `server.get_plugin("arc_core")` 调用：
 
-- `api_has_title_definition` / `api_ensure_title_definition` / `api_get_title_definition`
-- `api_unlock_title` / `api_has_unlocked_title`
+- `api_has_title_definition(title, rarity)` / `api_ensure_title_definition` / `api_get_title_definition`（按名称+稀有度）
+- `api_unlock_title(player, title, rarity=...)` / `api_has_unlocked_title(..., rarity=...)`
 - `increase_player_money` / `api_give_player_items`
 - 复用 `arc_core.database_manager` 读写 `player_achievement_stats`
 
