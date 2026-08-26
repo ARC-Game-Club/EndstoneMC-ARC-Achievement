@@ -1,7 +1,7 @@
 # EndStone ARC Achievement / 弧光成就
 
 [![Codacy Grade](https://app.codacy.com/project/badge/Grade/4c54f9ddc5e54246aea130507b71321e)](https://app.codacy.com/gh/ARC-Minecraft/EndstoneMC-ARC-Achievement/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
-[![版本](https://img.shields.io/badge/版本-0.1.0-blue.svg)](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Achievement)
+[![版本](https://img.shields.io/badge/版本-0.1.2-blue.svg)](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Achievement)
 [![EndStone](https://img.shields.io/badge/EndStone-0.10+-green.svg)](https://github.com/EndstoneMC/endstone)
 [![依赖](https://img.shields.io/badge/依赖-arc__core-orange.svg)](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Core-Plugin)
 
@@ -23,7 +23,7 @@
 - **进度与完成标记**：写入核心 SQLite 表 `player_achievement_stats`（`kill_total` / `kill:...` / `ach_unlock:<头衔>`），与拆分前同一库，进度不丢
 - **玩家面板**：已解锁 / 未解锁列表与条件说明；隐藏成就未达成前不展示
 - **OP 面板**：新建成就、编辑条件、启用/隐藏/删除；一键写入内置击杀成就包（含恐怖服包）
-- **解锁奖励**：达成后调用核心 `api_unlock_title`，按头衔定义发放金钱与物品，并可全服通告 + QQ Sync `custom` 事件
+- **解锁奖励**：达成后调用核心 `api_unlock_title`，按头衔定义发放金钱与物品；玩家端用 `send_toast` 弹出成就名与奖品，并可全服通告 + QQ Sync `custom` 事件
 - **菜单集成**：检测到本插件时，弧光核心「我的信息 → 我的成就」与 OP「成就管理」自动出现
 
 ## 安装

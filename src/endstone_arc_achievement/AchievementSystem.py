@@ -738,6 +738,95 @@ class AchievementSystem:
         _ = achievement_data.get("logic")
         return True
 
+    def _format_reward_money_plain(self, value: float) -> str:
+        try:
+            return f"{float(value):.2f}".rstrip("0").rstrip(".")
+        except Exception:
+            return str(value)
+
+    def _build_unlock_reward_toast_bits(self, unlock_title: str) -> List[str]:
+        """组装 toast 副文案用的奖品片段：存款、物品。"""
+        bits: List[str] = []
+        defn = None
+        try:
+            get_defn = getattr(self.title_system, "get_title_definition", None)
+            if callable(get_defn):
+                defn = get_defn(unlock_title)
+        except Exception:
+            defn = None
+        if not defn:
+            return bits
+        try:
+            money = float(defn.get("reward_money") or 0)
+        except (TypeError, ValueError):
+            money = 0.0
+        if money > 0:
+            money_tpl = self.language_manager.GetText("ACHIEVEMENT_UNLOCKED_TOAST_MONEY")
+            money_text = self._format_reward_money_plain(money)
+            if money_tpl:
+                bits.append(money_tpl.format(money_text))
+            else:
+                bits.append(f"存款 {money_text}")
+        for item in defn.get("reward_items") or []:
+            if not isinstance(item, dict):
+                continue
+            item_name = str(item.get("item_name") or item.get("id") or "").strip()
+            try:
+                count = int(item.get("count") or 0)
+            except (TypeError, ValueError):
+                count = 0
+            if not item_name or count <= 0:
+                continue
+            item_tpl = self.language_manager.GetText("ACHIEVEMENT_UNLOCKED_TOAST_ITEM")
+            if item_tpl:
+                bits.append(item_tpl.format(item_name, count))
+            else:
+                bits.append(f"{item_name}×{count}")
+        return bits
+
+    def _send_achievement_unlock_toast(
+        self, player: Player, achievement_name: str, unlock_title: str
+    ) -> None:
+        """用 send_toast 弹出成就解锁与奖品提示（失败则退回聊天）。"""
+        ach_name = str(achievement_name or unlock_title or "").strip()
+        unlock_title = str(unlock_title or "").strip()
+        if not unlock_title:
+            return
+
+        title_tpl = self.language_manager.GetText("ACHIEVEMENT_UNLOCKED_TOAST_TITLE")
+        toast_title = title_tpl.format(ach_name) if title_tpl else f"成就解锁：{ach_name}"
+
+        reward_bits = self._build_unlock_reward_toast_bits(unlock_title)
+        sep = self.language_manager.GetText("ACHIEVEMENT_UNLOCKED_TOAST_SEP") or " · "
+        reward_text = sep.join(reward_bits) if reward_bits else ""
+
+        if reward_text:
+            content_tpl = self.language_manager.GetText("ACHIEVEMENT_UNLOCKED_TOAST_CONTENT")
+            toast_content = (
+                content_tpl.format(unlock_title, reward_text)
+                if content_tpl
+                else f"头衔：{unlock_title}{sep}{reward_text}"
+            )
+        else:
+            content_tpl = self.language_manager.GetText("ACHIEVEMENT_UNLOCKED_TOAST_CONTENT_NO_REWARD")
+            toast_content = (
+                content_tpl.format(unlock_title) if content_tpl else f"头衔：{unlock_title}"
+            )
+
+        try:
+            player.send_toast(toast_title, toast_content)
+            return
+        except Exception:
+            pass
+        try:
+            fallback = self.language_manager.GetText("ACHIEVEMENT_UNLOCKED_HINT")
+            if fallback:
+                player.send_message(fallback.format(ach_name, unlock_title, reward_text or "无"))
+            else:
+                player.send_message(f"[{toast_title}] {toast_content}")
+        except Exception:
+            pass
+
     def _try_unlock_one_achievement(self, player: Player, achievement_data: Dict[str, Any]) -> None:
         xuid = self._xuid(player)
         unlock_title = str(achievement_data.get("unlock_title") or "").strip()
@@ -755,15 +844,13 @@ class AchievementSystem:
             pass
         first_unlock = self._mark_achievement_unlock_stat(xuid, unlock_title)
         if first_unlock:
+            ach_name = str(achievement_data.get("name") or "").strip()
             try:
-                msg = self.language_manager.GetText("ACHIEVEMENT_UNLOCKED_HINT")
-                if msg:
-                    player.send_message(msg.format(unlock_title))
+                self._send_achievement_unlock_toast(player, ach_name, unlock_title)
             except Exception:
                 pass
             try:
                 if callable(self.announce_achievement_unlock_func):
-                    ach_name = str(achievement_data.get("name") or "").strip()
                     self.announce_achievement_unlock_func(player, ach_name, unlock_title)
             except Exception:
                 pass
