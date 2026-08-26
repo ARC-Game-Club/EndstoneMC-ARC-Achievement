@@ -898,7 +898,11 @@ class AchievementSystem:
             return
 
         title_tpl = self.language_manager.GetText("ACHIEVEMENT_UNLOCKED_TOAST_TITLE")
+        #  = 基岩内置实心五角星 glyph（U+E107）
+        _star = "\ue107"
         toast_title = title_tpl.format(ach_name) if title_tpl else f"成就解锁：{ach_name}"
+        if not str(toast_title).startswith(_star):
+            toast_title = f"{_star} {toast_title}"
 
         reward_bits = self._build_unlock_reward_toast_bits(achievement_data or {})
         sep = self.language_manager.GetText("ACHIEVEMENT_UNLOCKED_TOAST_SEP") or " · "
