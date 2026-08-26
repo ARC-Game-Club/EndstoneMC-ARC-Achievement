@@ -499,6 +499,7 @@ class ARCAchievementPlugin(Plugin):
         )
         for achievement_row in rows:
             unlock_title = str(achievement_row.get("unlock_title") or "").strip()
+            rarity = str(achievement_row.get("rarity") or "普通").strip() or "普通"
             name = str(achievement_row.get("name") or unlock_title).strip()
             enabled = bool(achievement_row.get("enabled", True))
             if_hidden = bool(achievement_row.get("if_hidden", False))
@@ -506,13 +507,15 @@ class ARCAchievementPlugin(Plugin):
             status = self.language_manager.GetText('MY_ACHIEVEMENTS_STATUS_UNLOCKED')
             disabled_tag = "" if enabled else self.language_manager.GetText('MY_ACHIEVEMENTS_TAG_DISABLED')
             label = self.language_manager.GetText('MY_ACHIEVEMENTS_BUTTON_LABEL').format(
-                name,
+                f"{name}§7[{rarity}]§r",
                 unlock_title,
                 hidden_tag + disabled_tag + status,
             )
             panel.add_button(
                 label,
-                on_click=lambda p, ut=unlock_title: self.show_my_achievement_detail(p, ut, "unlocked"),
+                on_click=lambda p, ut=unlock_title, r=rarity: self.show_my_achievement_detail(
+                    p, ut, "unlocked", r
+                ),
             )
         panel.add_button(
             self.language_manager.GetText('RETURN_BUTTON_TEXT'),
@@ -529,18 +532,21 @@ class ARCAchievementPlugin(Plugin):
         )
         for achievement_row in rows:
             unlock_title = str(achievement_row.get("unlock_title") or "").strip()
+            rarity = str(achievement_row.get("rarity") or "普通").strip() or "普通"
             name = str(achievement_row.get("name") or unlock_title).strip()
             enabled = bool(achievement_row.get("enabled", True))
             status = self.language_manager.GetText('MY_ACHIEVEMENTS_STATUS_LOCKED')
             disabled_tag = "" if enabled else self.language_manager.GetText('MY_ACHIEVEMENTS_TAG_DISABLED')
             label = self.language_manager.GetText('MY_ACHIEVEMENTS_BUTTON_LABEL').format(
-                name,
+                f"{name}§7[{rarity}]§r",
                 unlock_title,
                 disabled_tag + status,
             )
             panel.add_button(
                 label,
-                on_click=lambda p, ut=unlock_title: self.show_my_achievement_detail(p, ut, "locked"),
+                on_click=lambda p, ut=unlock_title, r=rarity: self.show_my_achievement_detail(
+                    p, ut, "locked", r
+                ),
             )
         panel.add_button(
             self.language_manager.GetText('RETURN_BUTTON_TEXT'),
@@ -666,15 +672,19 @@ class ARCAchievementPlugin(Plugin):
             )
         return "\n".join(lines)
 
-    def show_my_achievement_detail(self, player: Player, unlock_title: str, return_mode: str):
-        achievement_row = self.achievement_system.get_achievement(unlock_title)
+    def show_my_achievement_detail(
+        self, player: Player, unlock_title: str, return_mode: str, rarity: str = "普通"
+    ):
+        achievement_row = self.achievement_system.get_achievement(unlock_title, rarity)
         if not achievement_row:
             player.send_message(self.language_manager.GetText('MY_ACHIEVEMENT_NOT_FOUND'))
             if return_mode == "locked":
                 return self.show_my_achievements_locked_list(player)
             return self.show_my_achievements_unlocked_list(player)
 
-        is_unlocked = self.achievement_system.player_has_unlocked_title(str(player.xuid), unlock_title)
+        is_unlocked = self.achievement_system.player_has_unlocked_title(
+            str(player.xuid), unlock_title, rarity
+        )
         body = self._build_my_achievement_detail_body(achievement_row, is_unlocked)
         back_cb = (
             self.show_my_achievements_locked_list
@@ -702,20 +712,9 @@ class ARCAchievementPlugin(Plugin):
                          on_click=self.show_op_achievement_create_panel)
         panel.add_button(self.language_manager.GetText("OP_ACHIEVEMENT_LIST_BUTTON"),
                          on_click=self.show_op_achievement_list_panel)
-        panel.add_button(self.language_manager.GetText("OP_ACHIEVEMENT_APPLY_DEFAULT_BUTTON"),
-                         on_click=self._do_op_apply_default_kill_achievements)
         panel.add_button(self.language_manager.GetText('RETURN_BUTTON_TEXT'),
                          on_click=self.return_to_op_main)
         player.send_form(panel)
-
-    def _do_op_apply_default_kill_achievements(self, player: Player):
-        bundle_size = self.achievement_system.get_horror_kill_bundle_size()
-        ok = self.achievement_system.apply_horror_kill_achievement_bundle(self._title_bridge)
-        if ok:
-            player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_APPLY_DEFAULT_DONE").format(bundle_size))
-        else:
-            player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_SAVE_FAIL"))
-        self.show_op_achievement_manage_panel(player)
 
     def show_op_achievement_list_panel(self, player: Player):
         achievement_rows = self.achievement_system.list_achievements()
@@ -731,15 +730,21 @@ class ARCAchievementPlugin(Plugin):
         for achievement_row in achievement_rows:
             name = str(achievement_row.get("name") or "").strip()
             unlock_title = str(achievement_row.get("unlock_title") or "").strip()
-            enabled = int(achievement_row.get("enabled") or 0) == 1
+            rarity = str(achievement_row.get("rarity") or "普通").strip() or "普通"
+            enabled = bool(achievement_row.get("enabled", True))
             if_hidden = bool(achievement_row.get("if_hidden", False))
-            condition_count = len(self.achievement_system.list_conditions(unlock_title))
+            condition_count = len(
+                self.achievement_system.list_conditions(unlock_title, rarity)
+            )
             status = "§aON§r" if enabled else "§cOFF§r"
             hid = self.language_manager.GetText('OP_ACHIEVEMENT_HIDDEN_TAG') if if_hidden else ""
-            label = f"{hid}{status} {name}\n头衔: {unlock_title} | 条件数: {condition_count} | 逻辑: all"
+            label = (
+                f"{hid}{status} {name} §7[{rarity}]§r\n"
+                f"头衔: {unlock_title} | 条件数: {condition_count} | 逻辑: all"
+            )
             panel.add_button(
                 label,
-                on_click=lambda p, ut=unlock_title: self.show_op_achievement_edit_panel(p, ut),
+                on_click=lambda p, ut=unlock_title, r=rarity: self.show_op_achievement_edit_panel(p, ut, r),
             )
         panel.add_button(self.language_manager.GetText('RETURN_BUTTON_TEXT'),
                          on_click=self.show_op_achievement_manage_panel)
@@ -882,27 +887,27 @@ class ARCAchievementPlugin(Plugin):
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_SAVE_FAIL"))
             self.show_op_achievement_manage_panel(player)
 
-    def show_op_achievement_edit_panel(self, player: Player, unlock_title: str):
-        achievement_row = self.achievement_system.get_achievement(unlock_title)
+    def show_op_achievement_edit_panel(self, player: Player, unlock_title: str, rarity: str = "普通"):
+        achievement_row = self.achievement_system.get_achievement(unlock_title, rarity)
         if not achievement_row:
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_NOT_FOUND"))
             return self.show_op_achievement_list_panel(player)
 
         name = str(achievement_row.get("name") or "").strip()
         current_unlock_title = str(achievement_row.get("unlock_title") or "").strip()
-        enabled = int(achievement_row.get("enabled") or 0) == 1
+        current_rarity = str(achievement_row.get("rarity") or "普通").strip() or "普通"
+        enabled = bool(achievement_row.get("enabled", True))
         if_hidden = bool(achievement_row.get("if_hidden", False))
-        rarity = str(achievement_row.get("rarity") or "普通").strip()
         reward_money = achievement_row.get("reward_money") or 0
         reward_items = achievement_row.get("reward_items") or []
-        condition_rows = self.achievement_system.list_conditions(current_unlock_title)
+        condition_rows = self.achievement_system.list_conditions(current_unlock_title, current_rarity)
         items_preview = self._format_reward_items_text(reward_items) or "无"
 
         panel = ActionForm(
-            title=f"编辑成就: {name}",
+            title=f"编辑成就: {name} [{current_rarity}]",
             content=(
                 f"头衔: {current_unlock_title}\n"
-                f"稀有度: {rarity}\n"
+                f"稀有度: {current_rarity}\n"
                 f"奖励存款: {reward_money}\n"
                 f"奖励物品: {items_preview}\n"
                 f"状态: {'启用' if enabled else '禁用'}\n"
@@ -915,7 +920,7 @@ class ARCAchievementPlugin(Plugin):
         )
         panel.add_button(
             "编辑基础信息",
-            on_click=lambda p, ut=current_unlock_title: self._show_op_achievement_edit_meta_modal(p, ut),
+            on_click=lambda p, ut=current_unlock_title, r=current_rarity: self._show_op_achievement_edit_meta_modal(p, ut, r),
         )
         for condition_row in condition_rows:
             condition_id = int(condition_row.get("id") or 0)
@@ -950,7 +955,7 @@ class ARCAchievementPlugin(Plugin):
                 condition_text = f"{condition_type}:{target_id} >= {required_count}"
             panel.add_button(
                 f"条件 #{condition_id}\n{condition_text}",
-                on_click=lambda p, ut=current_unlock_title, c_id=condition_id: self.show_op_achievement_condition_panel(p, ut, c_id),
+                on_click=lambda p, ut=current_unlock_title, c_id=condition_id, r=current_rarity: self.show_op_achievement_condition_panel(p, ut, c_id),
             )
         panel.add_button(
             "新增条件",
@@ -959,7 +964,7 @@ class ARCAchievementPlugin(Plugin):
         toggle_text = self.language_manager.GetText("OP_ACHIEVEMENT_DISABLE_BUTTON") if enabled else self.language_manager.GetText("OP_ACHIEVEMENT_ENABLE_BUTTON")
         panel.add_button(
             toggle_text,
-            on_click=lambda p, ut=current_unlock_title, en=enabled: self._do_op_achievement_toggle(p, ut, not en),
+            on_click=lambda p, ut=current_unlock_title, en=enabled, r=current_rarity: self._do_op_achievement_toggle(p, ut, not en, r),
         )
         hidden_toggle = (
             self.language_manager.GetText("OP_ACHIEVEMENT_CLEAR_HIDDEN_BUTTON")
@@ -968,20 +973,22 @@ class ARCAchievementPlugin(Plugin):
         )
         panel.add_button(
             hidden_toggle,
-            on_click=lambda p, ut=current_unlock_title, h=if_hidden: self._do_op_achievement_toggle_hidden(
-                p, ut, not h
+            on_click=lambda p, ut=current_unlock_title, h=if_hidden, r=current_rarity: self._do_op_achievement_toggle_hidden(
+                p, ut, not h, r
             ),
         )
         panel.add_button(
             self.language_manager.GetText("OP_ACHIEVEMENT_DELETE_BUTTON"),
-            on_click=lambda p, ut=current_unlock_title: self._do_op_achievement_delete(p, ut),
+            on_click=lambda p, ut=current_unlock_title, r=current_rarity: self._do_op_achievement_delete(p, ut, r),
         )
         panel.add_button(self.language_manager.GetText('RETURN_BUTTON_TEXT'),
                          on_click=self.show_op_achievement_list_panel)
         player.send_form(panel)
 
-    def _show_op_achievement_edit_meta_modal(self, player: Player, unlock_title: str):
-        achievement_row = self.achievement_system.get_achievement(unlock_title)
+    def _show_op_achievement_edit_meta_modal(
+        self, player: Player, unlock_title: str, rarity: str = "普通"
+    ):
+        achievement_row = self.achievement_system.get_achievement(unlock_title, rarity)
         if not achievement_row:
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_NOT_FOUND"))
             return self.show_op_achievement_list_panel(player)
@@ -1019,15 +1026,16 @@ class ARCAchievementPlugin(Plugin):
         enabled_input = TextInput(
             label=self.language_manager.GetText("OP_ACHIEVEMENT_FIELD_ENABLED"),
             placeholder="1=启用 0=禁用",
-            default_value="1" if int(achievement_row.get("enabled") or 0) == 1 else "0",
+            default_value="1" if bool(achievement_row.get("enabled", True)) else "0",
         )
         hidden_input = TextInput(
             label=self.language_manager.GetText("OP_ACHIEVEMENT_FIELD_IF_HIDDEN"),
             placeholder=self.language_manager.GetText("OP_ACHIEVEMENT_FIELD_IF_HIDDEN_HINT"),
             default_value="1" if bool(achievement_row.get("if_hidden", False)) else "0",
         )
+        old_rarity = str(achievement_row.get("rarity") or "普通").strip() or "普通"
         form = ModalForm(
-            title=f"编辑成就信息: {unlock_title}",
+            title=f"编辑成就信息: {unlock_title} [{old_rarity}]",
             controls=[
                 name_input,
                 title_input,
@@ -1039,20 +1047,24 @@ class ARCAchievementPlugin(Plugin):
                 hidden_input,
             ],
             on_close=None,
-            on_submit=lambda p, json_str, ut=unlock_title: self._do_op_achievement_save_meta(p, json_str, ut),
+            on_submit=lambda p, json_str, ut=unlock_title, r=old_rarity: self._do_op_achievement_save_meta(
+                p, json_str, ut, r
+            ),
         )
         player.send_form(form)
 
-    def _do_op_achievement_save_meta(self, player: Player, json_str: str, old_unlock_title: str):
+    def _do_op_achievement_save_meta(
+        self, player: Player, json_str: str, old_unlock_title: str, old_rarity: str = "普通"
+    ):
         try:
             data = json.loads(json_str)
         except Exception:
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_SAVE_FAIL"))
-            return self.show_op_achievement_edit_panel(player, old_unlock_title)
+            return self.show_op_achievement_edit_panel(player, old_unlock_title, old_rarity)
 
         if not data or len(data) < 2:
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_SAVE_FAIL"))
-            return self.show_op_achievement_edit_panel(player, old_unlock_title)
+            return self.show_op_achievement_edit_panel(player, old_unlock_title, old_rarity)
 
         name = str(data[0] or "").strip()
         new_unlock_title = str(data[1] or "").strip()
@@ -1080,13 +1092,14 @@ class ARCAchievementPlugin(Plugin):
             description=description,
             reward_money=reward_money,
             reward_items=reward_items,
+            old_rarity=old_rarity,
         )
         if ok:
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_SAVE_SUCCESS"))
-            self.show_op_achievement_edit_panel(player, new_unlock_title)
+            self.show_op_achievement_edit_panel(player, new_unlock_title, rarity)
         else:
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_SAVE_FAIL"))
-            self.show_op_achievement_edit_panel(player, old_unlock_title)
+            self.show_op_achievement_edit_panel(player, old_unlock_title, old_rarity)
 
     def _show_op_achievement_create_condition_modal(self, player: Player, unlock_title: str):
         entity_input = TextInput(
@@ -1256,24 +1269,28 @@ class ARCAchievementPlugin(Plugin):
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_DELETE_FAIL"))
         self.show_op_achievement_edit_panel(player, unlock_title)
 
-    def _do_op_achievement_toggle(self, player: Player, unlock_title: str, enabled: bool):
-        ok = self.achievement_system.set_achievement_enabled(unlock_title, bool(enabled))
+    def _do_op_achievement_toggle(
+        self, player: Player, unlock_title: str, enabled: bool, rarity: str = "普通"
+    ):
+        ok = self.achievement_system.set_achievement_enabled(unlock_title, bool(enabled), rarity)
         if ok:
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_SAVE_SUCCESS"))
         else:
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_SAVE_FAIL"))
-        self.show_op_achievement_edit_panel(player, unlock_title)
+        self.show_op_achievement_edit_panel(player, unlock_title, rarity)
 
-    def _do_op_achievement_toggle_hidden(self, player: Player, unlock_title: str, if_hidden: bool):
-        ok = self.achievement_system.set_achievement_if_hidden(unlock_title, bool(if_hidden))
+    def _do_op_achievement_toggle_hidden(
+        self, player: Player, unlock_title: str, if_hidden: bool, rarity: str = "普通"
+    ):
+        ok = self.achievement_system.set_achievement_if_hidden(unlock_title, bool(if_hidden), rarity)
         if ok:
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_SAVE_SUCCESS"))
         else:
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_SAVE_FAIL"))
-        self.show_op_achievement_edit_panel(player, unlock_title)
+        self.show_op_achievement_edit_panel(player, unlock_title, rarity)
 
-    def _do_op_achievement_delete(self, player: Player, unlock_title: str):
-        ok = self.achievement_system.delete_achievement(unlock_title)
+    def _do_op_achievement_delete(self, player: Player, unlock_title: str, rarity: str = "普通"):
+        ok = self.achievement_system.delete_achievement(unlock_title, rarity)
         if ok:
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_DELETE_SUCCESS"))
         else:

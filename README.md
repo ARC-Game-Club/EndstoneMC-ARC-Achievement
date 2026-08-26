@@ -1,7 +1,7 @@
 # EndStone ARC Achievement / 弧光成就
 
 [![Codacy Grade](https://app.codacy.com/project/badge/Grade/4c54f9ddc5e54246aea130507b71321e)](https://app.codacy.com/gh/ARC-Minecraft/EndstoneMC-ARC-Achievement/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
-[![版本](https://img.shields.io/badge/版本-0.1.7-blue.svg)](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Achievement)
+[![版本](https://img.shields.io/badge/版本-0.1.8-blue.svg)](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Achievement)
 [![EndStone](https://img.shields.io/badge/EndStone-0.10+-green.svg)](https://github.com/EndstoneMC/endstone)
 [![依赖](https://img.shields.io/badge/依赖-arc__core-orange.svg)](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Core-Plugin)
 
@@ -122,6 +122,11 @@ python -m build --wheel
 见 [LICENSE](LICENSE)。
 
 ## 更新日志
+
+### v0.1.8
+- **丧尸服成就包**：新增「丧尸绞肉机」100/1千/1万/10万/100万（普通→神话）及特感/Boss 阶段性成就
+- **同名不同稀有度**：成就解锁标记与热索引支持 `(头衔, 稀有度)` 并存
+- **移除** OP「一键创建默认击杀成就」按钮
 
 ### v0.1.7
 - **修复群聊成就推送**：回退查找 QQ Sync 时优先 `arc_qq_sync_astrbot`（与股票插件一致；Endstone 将 entry-point `-` 转为 `_`）
