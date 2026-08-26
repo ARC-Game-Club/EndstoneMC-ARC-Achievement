@@ -296,7 +296,12 @@ class ARCAchievementPlugin(Plugin):
             pass
         try:
             pm = self.server.plugin_manager
-            for name in ("arc-qq-sync-astrbot", "qqsync_plugin"):
+            # Endstone 会把 entry-point 里的 '-' 转成 '_'，故优先 arc_qq_sync_astrbot
+            for name in (
+                "arc_qq_sync_astrbot",
+                "arc-qq-sync-astrbot",
+                "qqsync_plugin",
+            ):
                 plug = pm.get_plugin(name)
                 if plug is not None and hasattr(plug, "api_send_event"):
                     plug.api_send_event(event_type, display_name, raw_name, message)
