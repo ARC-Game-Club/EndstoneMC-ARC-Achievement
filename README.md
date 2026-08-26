@@ -1,7 +1,7 @@
 # EndStone ARC Achievement / 弧光成就
 
 [![Codacy Grade](https://app.codacy.com/project/badge/Grade/4c54f9ddc5e54246aea130507b71321e)](https://app.codacy.com/gh/ARC-Minecraft/EndstoneMC-ARC-Achievement/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
-[![版本](https://img.shields.io/badge/版本-0.1.5-blue.svg)](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Achievement)
+[![版本](https://img.shields.io/badge/版本-0.1.6-blue.svg)](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Achievement)
 [![EndStone](https://img.shields.io/badge/EndStone-0.10+-green.svg)](https://github.com/EndstoneMC/endstone)
 [![依赖](https://img.shields.io/badge/依赖-arc__core-orange.svg)](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Core-Plugin)
 
@@ -14,13 +14,15 @@
 | 包名 | `endstone_arc_achievement` |
 | Plugin id | `arc_achievement` |
 | 数据目录 | `plugins/ARCAchievement/` |
-| 依赖 | 必须安装并启用 `arc_core`（建议 ≥ 0.9.7） |
+| 依赖 | 必须安装并启用 `arc_core`（建议 ≥ 0.9.11，需活动统计 API） |
 
 ## 功能特性
 
 - **击杀成就**：`kill_entity`（单种生物，`*` 表示任意生物累计）、`kill_entity_sum`（多种生物击杀数相加）
+- **方块成就**：`break_block` / `place_block`（及 `_sum`）；计数由弧光核心维护
 - **JSON 配置**：定义保存在 `plugins/ARCAchievement/achievements.json`（含稀有度、介绍、奖励）
-- **进度与完成标记**：写入核心 SQLite 表 `player_achievement_stats`（`kill_total` / `kill:...` / `ach_unlock:<头衔>`），与拆分前同一库，进度不丢
+- **进度查询**：经 `arc_core` 只读 API（`api_get_player_stat` / `api_get_player_kill_count` 等）读取 `player_activity_stats`；**本插件不写核心库**
+- **解锁标记**：本地 `plugins/ARCAchievement/achievement.db`
 - **玩家面板**：已解锁 / 未解锁列表与条件说明；隐藏成就未达成前不展示
 - **OP 面板**：新建成就、编辑条件与奖励、启用/隐藏/删除；一键写入内置击杀成就包（含恐怖服包）
 - **解锁流程**：按「头衔名+稀有度」查核心是否已注册 → 未注册则 `api_ensure_title_definition` → `api_unlock_title(..., rarity=)` → 本插件发放金钱/物品 + toast；全服通告 + QQ Sync `custom` 事件

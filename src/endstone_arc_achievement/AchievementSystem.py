@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
+import sqlite3
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
@@ -117,21 +119,23 @@ class AchievementSystem:
     """
     成就系统（JSON 配置）：
     - 成就定义存到 achievements.json，服主可直接编辑
-    - 条件类型：kill_entity（单种生物）；kill_entity_sum（多种生物击杀数相加达到 required_count）
-    - 当前逻辑固定：all（列表内条件全部满足才解锁）
-    - 进度与完成：`player_achievement_stats` 中 `kill_total` / `kill:...` 等为击杀计数；
-      `ach_unlock:<unlock_title>` 表示该成就已达成（与是否成功发到头衔无关，避免发放失败丢进度）
+    - 条件：kill_entity / kill_entity_sum / break_block / place_block（及 sum）
+    - 活动计数只读查询弧光核心 API（player_activity_stats）；本插件不写核心库
+    - 解锁标记存本插件 achievement.db（ach_unlock:<title>）
     """
 
     condition_type_kill_entity = "kill_entity"
     condition_type_kill_entity_sum = "kill_entity_sum"
+    condition_type_break_block = "break_block"
+    condition_type_break_block_sum = "break_block_sum"
+    condition_type_place_block = "place_block"
+    condition_type_place_block_sum = "place_block_sum"
     logic_all = "all"
-    # 与击杀类 stat_key 不冲突；成就完成标记，count >= 1 即视为已解锁
     _STAT_KEY_ACH_UNLOCK_PREFIX = "ach_unlock:"
 
     def __init__(
         self,
-        database_manager,
+        arc_core,
         title_system,
         language_manager,
         unlock_title_func,
@@ -140,7 +144,9 @@ class AchievementSystem:
         grant_money_func=None,
         grant_items_func=None,
     ):
-        self.database_manager = database_manager
+        self.arc_core = arc_core
+        # 仅用于一次性只读迁移旧核心表；禁止对本库做业务写入
+        self._legacy_core_db = getattr(arc_core, "database_manager", None)
         self.title_system = title_system
         self.language_manager = language_manager
         self.unlock_title_func = unlock_title_func
@@ -150,40 +156,81 @@ class AchievementSystem:
 
         self._main_path = Path(main_path)
         self._achievement_json_path = self._main_path / "achievements.json"
+        self._unlock_db_path = self._main_path / "achievement.db"
+        self._unlock_local = threading.local()
 
-        self._table_stats = "player_achievement_stats"
-        self._table_condition = "achievement_conditions"
         self._legacy_table_def = "achievement_definitions"
 
-        # 生物类型 ID -> 可能受影响的成就 unlock_title（仅击杀类条件参与；配置变更后失效重建）
-        self._kill_hot_index: Optional[Dict[str, Set[str]]] = None
+        # 活动键 -> 可能受影响的成就 unlock_title
+        self._activity_hot_index: Optional[Dict[str, Set[str]]] = None
+
+    def _unlock_conn(self) -> sqlite3.Connection:
+        conn = getattr(self._unlock_local, "conn", None)
+        if conn is not None:
+            return conn
+        self._main_path.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self._unlock_db_path), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        self._unlock_local.conn = conn
+        return conn
 
     def ensure_tables(self) -> bool:
         try:
-            self.database_manager.execute(
-                "CREATE TABLE IF NOT EXISTS player_achievement_stats ("
+            conn = self._unlock_conn()
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS achievement_unlocks ("
                 "xuid TEXT NOT NULL, "
-                "stat_key TEXT NOT NULL, "
-                "count INTEGER NOT NULL DEFAULT 0, "
-                "PRIMARY KEY (xuid, stat_key)"
-                ")"
-            )
-            self.database_manager.execute(
-                "CREATE TABLE IF NOT EXISTS achievement_conditions ("
-                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
                 "unlock_title TEXT NOT NULL, "
-                "condition_type TEXT NOT NULL, "
-                "target_id TEXT NOT NULL, "
-                "required_count INTEGER NOT NULL"
+                "unlocked INTEGER NOT NULL DEFAULT 1, "
+                "PRIMARY KEY (xuid, unlock_title)"
                 ")"
             )
+            conn.commit()
             self._migrate_legacy_definitions_to_db()
             self._ensure_json_definition_file()
             self._migrate_achievement_json_if_hidden_default()
+            self._migrate_legacy_unlock_marks_from_core()
             self._backfill_achievement_unlock_stats_from_progress()
             return True
         except Exception:
             return False
+
+    def _migrate_legacy_unlock_marks_from_core(self) -> None:
+        """只读迁移核心库旧表中的 ach_unlock:* 到本地 achievement.db。"""
+        db = self._legacy_core_db
+        if db is None:
+            return
+        try:
+            rows = db.query_all(
+                "SELECT xuid, stat_key, count FROM player_achievement_stats "
+                "WHERE stat_key LIKE 'ach_unlock:%' AND count >= 1",
+                (),
+            )
+        except Exception:
+            return
+        if not rows:
+            return
+        try:
+            conn = self._unlock_conn()
+            for row in rows:
+                if isinstance(row, dict):
+                    xuid = str(row.get("xuid") or "").strip()
+                    key = str(row.get("stat_key") or "").strip()
+                else:
+                    xuid = str(row[0] or "").strip()
+                    key = str(row[1] or "").strip()
+                if not xuid or not key.startswith(self._STAT_KEY_ACH_UNLOCK_PREFIX):
+                    continue
+                title = key[len(self._STAT_KEY_ACH_UNLOCK_PREFIX):].strip()
+                if not title:
+                    continue
+                conn.execute(
+                    "INSERT OR IGNORE INTO achievement_unlocks (xuid, unlock_title, unlocked) VALUES (?, ?, 1)",
+                    (xuid, title),
+                )
+            conn.commit()
+        except Exception:
+            pass
 
     @staticmethod
     def _safe_int(value: Any, default_value: int = 0) -> int:
@@ -277,18 +324,39 @@ class AchievementSystem:
                 "required_count": required_count,
             }
 
-        if condition_type != self.condition_type_kill_entity:
-            return None
-        target_id = str(condition_data.get("target_id") or "").strip()
-        if not target_id or required_count <= 0:
-            return None
-        return {
-            "id": condition_id,
-            "type": condition_type,
-            "condition_type": condition_type,
-            "target_id": target_id,
-            "required_count": required_count,
-        }
+        if condition_type in (
+            self.condition_type_break_block_sum,
+            self.condition_type_place_block_sum,
+        ):
+            target_ids = self._normalize_target_ids_list(condition_data.get("target_ids"))
+            if not target_ids and condition_data.get("target_id"):
+                target_ids = self._normalize_target_ids_list(str(condition_data.get("target_id") or ""))
+            if len(target_ids) < 1 or required_count <= 0:
+                return None
+            return {
+                "id": condition_id,
+                "type": condition_type,
+                "condition_type": condition_type,
+                "target_ids": target_ids,
+                "required_count": required_count,
+            }
+
+        if condition_type in (
+            self.condition_type_kill_entity,
+            self.condition_type_break_block,
+            self.condition_type_place_block,
+        ):
+            target_id = str(condition_data.get("target_id") or "").strip()
+            if not target_id or required_count <= 0:
+                return None
+            return {
+                "id": condition_id,
+                "type": condition_type,
+                "condition_type": condition_type,
+                "target_id": target_id,
+                "required_count": required_count,
+            }
+        return None
 
     def _load_json_config(self) -> Dict[str, Any]:
         try:
@@ -369,10 +437,10 @@ class AchievementSystem:
             return False
 
     def _invalidate_kill_hot_index(self) -> None:
-        self._kill_hot_index = None
+        self._activity_hot_index = None
 
     def _ensure_kill_hot_index(self) -> None:
-        if self._kill_hot_index is not None:
+        if self._activity_hot_index is not None:
             return
         self._rebuild_kill_hot_index()
 
@@ -390,11 +458,11 @@ class AchievementSystem:
                 condition_obj = self._build_condition_from_dict(condition_data)
                 if condition_obj is None:
                     continue
-                for entity_key in condition_obj.kill_index_entity_keys():
-                    if entity_key not in index:
-                        index[entity_key] = set()
-                    index[entity_key].add(unlock_title)
-        self._kill_hot_index = index
+                for activity_key in condition_obj.activity_index_keys():
+                    if activity_key not in index:
+                        index[activity_key] = set()
+                    index[activity_key].add(unlock_title)
+        self._activity_hot_index = index
 
     def _build_condition_from_dict(self, raw_dict: Dict[str, Any]) -> Optional[AchievementConditionBase]:
         return build_achievement_condition_from_dict(
@@ -403,6 +471,10 @@ class AchievementSystem:
             self.condition_type_kill_entity_sum,
             self._normalize_target_ids_list,
             self._safe_int,
+            self.condition_type_break_block,
+            self.condition_type_break_block_sum,
+            self.condition_type_place_block,
+            self.condition_type_place_block_sum,
         )
 
     def _migrate_legacy_definitions_to_db(self) -> None:
@@ -411,11 +483,11 @@ class AchievementSystem:
             if self._load_json_config().get("achievements"):
                 return
 
-            legacy_rows = self.database_manager.query_all(
+            legacy_rows = self._legacy_core_db.query_all(
                 "SELECT name, stat_key, required_count, unlock_title, enabled "
                 "FROM achievement_definitions",
                 (),
-            )
+            ) if self._legacy_core_db is not None else None
             if not legacy_rows:
                 return
 
@@ -480,10 +552,14 @@ class AchievementSystem:
         if config_data.get("achievements"):
             return
 
-        condition_rows = self.database_manager.query_all(
-            "SELECT id, unlock_title, condition_type, target_id, required_count "
-            "FROM achievement_conditions ORDER BY id ASC",
-            (),
+        condition_rows = (
+            self._legacy_core_db.query_all(
+                "SELECT id, unlock_title, condition_type, target_id, required_count "
+                "FROM achievement_conditions ORDER BY id ASC",
+                (),
+            )
+            if self._legacy_core_db is not None
+            else None
         )
         if not condition_rows:
             self._save_json_config(self._default_config())
@@ -581,6 +657,14 @@ class AchievementSystem:
             if target_id == "*":
                 return "kill_total"
             return f"kill:{target_id}"
+        if condition_type == self.condition_type_break_block:
+            if target_id == "*":
+                return "break_total"
+            return f"break:{target_id}"
+        if condition_type == self.condition_type_place_block:
+            if target_id == "*":
+                return "place_total"
+            return f"place:{target_id}"
         return ""
 
     def _parse_legacy_stat_key(self, stat_key: str) -> Optional[Tuple[str, str]]:
@@ -594,27 +678,18 @@ class AchievementSystem:
         return None
 
     def _get_stat_count(self, xuid: str, stat_key: str) -> int:
-        row = self.database_manager.query_one(
-            "SELECT count FROM player_achievement_stats WHERE xuid = ? AND stat_key = ?",
-            (xuid, stat_key),
-        )
-        if not row:
+        """只读查询弧光核心活动统计 API。"""
+        xuid = str(xuid or "").strip()
+        stat_key = str(stat_key or "").strip()
+        if not xuid or not stat_key or self.arc_core is None:
             return 0
-        return self._safe_int(row.get("count", 0), 0)
-
-    def _inc_stat(self, xuid: str, stat_key: str, delta: int = 1) -> int:
-        delta = self._safe_int(delta, 1)
-        if delta <= 0:
-            return self._get_stat_count(xuid, stat_key)
-        self.database_manager.execute(
-            "INSERT OR IGNORE INTO player_achievement_stats (xuid, stat_key, count) VALUES (?, ?, 0)",
-            (xuid, stat_key),
-        )
-        self.database_manager.execute(
-            "UPDATE player_achievement_stats SET count = count + ? WHERE xuid = ? AND stat_key = ?",
-            (delta, xuid, stat_key),
-        )
-        return self._get_stat_count(xuid, stat_key)
+        try:
+            fn = getattr(self.arc_core, "api_get_player_stat", None)
+            if callable(fn):
+                return self._safe_int(fn(stat_key, xuid=xuid), 0)
+        except Exception:
+            return 0
+        return 0
 
     def _achievement_unlock_stat_key(self, unlock_title: str) -> str:
         return self._STAT_KEY_ACH_UNLOCK_PREFIX + str(unlock_title or "").strip()
@@ -624,23 +699,36 @@ class AchievementSystem:
         ut = str(unlock_title or "").strip()
         if not xs or not ut:
             return False
-        return self._get_stat_count(xs, self._achievement_unlock_stat_key(ut)) >= 1
+        try:
+            row = self._unlock_conn().execute(
+                "SELECT unlocked FROM achievement_unlocks WHERE xuid = ? AND unlock_title = ?",
+                (xs, ut),
+            ).fetchone()
+            if not row:
+                return False
+            return int(row["unlocked"] if isinstance(row, sqlite3.Row) else row[0] or 0) >= 1
+        except Exception:
+            return False
 
     def _ensure_achievement_unlock_stat_silent(self, xuid: str, unlock_title: str) -> None:
-        """写入成就完成标记（不触发提示）。用于迁移补全或与正常解锁路径共用。"""
+        """写入成就完成标记到本地库（不触发提示）。"""
         xs = str(xuid or "").strip()
         ut = str(unlock_title or "").strip()
         if not xs or not ut:
             return
-        key = self._achievement_unlock_stat_key(ut)
-        self.database_manager.execute(
-            "INSERT OR IGNORE INTO player_achievement_stats (xuid, stat_key, count) VALUES (?, ?, 1)",
-            (xs, key),
-        )
-        self.database_manager.execute(
-            "UPDATE player_achievement_stats SET count = 1 WHERE xuid = ? AND stat_key = ? AND count < 1",
-            (xs, key),
-        )
+        try:
+            conn = self._unlock_conn()
+            conn.execute(
+                "INSERT OR IGNORE INTO achievement_unlocks (xuid, unlock_title, unlocked) VALUES (?, ?, 1)",
+                (xs, ut),
+            )
+            conn.execute(
+                "UPDATE achievement_unlocks SET unlocked = 1 WHERE xuid = ? AND unlock_title = ? AND unlocked < 1",
+                (xs, ut),
+            )
+            conn.commit()
+        except Exception:
+            pass
 
     def _mark_achievement_unlock_stat(self, xuid: str, unlock_title: str) -> bool:
         """写入成就完成标记。返回 True 表示本次为新写入（用于首次解锁提示）。"""
@@ -649,28 +737,27 @@ class AchievementSystem:
         return not before
 
     def _collect_xuids_for_achievement_backfill(self) -> Set[str]:
-        """出现过统计或头衔记录的玩家，才可能需要补全 ach_unlock。"""
+        """出现过解锁标记或头衔记录的玩家，才可能需要补全 ach_unlock。"""
         out: Set[str] = set()
         try:
-            for r in self.database_manager.query_all(
-                "SELECT DISTINCT xuid FROM player_achievement_stats",
-                (),
-            ):
-                x = str(r.get("xuid") or "").strip()
+            for r in self._unlock_conn().execute("SELECT DISTINCT xuid FROM achievement_unlocks"):
+                x = str(r[0] or "").strip()
                 if x:
                     out.add(x)
         except Exception:
             pass
-        try:
-            for r in self.database_manager.query_all(
-                "SELECT DISTINCT xuid FROM player_title_unlock_time",
-                (),
-            ):
-                x = str(r.get("xuid") or "").strip()
-                if x:
-                    out.add(x)
-        except Exception:
-            pass
+        db = self._legacy_core_db
+        if db is not None:
+            try:
+                for r in db.query_all(
+                    "SELECT DISTINCT xuid FROM player_title_unlock_time",
+                    (),
+                ):
+                    x = str(r.get("xuid") if isinstance(r, dict) else r[0] or "").strip()
+                    if x:
+                        out.add(x)
+            except Exception:
+                pass
         return out
 
     def _backfill_achievement_unlock_stats_from_progress(self) -> None:
@@ -992,24 +1079,46 @@ class AchievementSystem:
 
     # ---------- 统计入口 ----------
     def record_kill(self, player: Player, entity_type: str) -> None:
+        """核心已记账后调用：按 API 查询并检查相关击杀成就。"""
         if not player or not entity_type:
             return
         entity_type = str(entity_type).strip()
         if not entity_type:
             return
-        xuid = self._xuid(player)
-        self._inc_stat(xuid, "kill_total", 1)
-        self._inc_stat(xuid, f"kill:{entity_type}", 1)
         self._ensure_kill_hot_index()
         related_titles: Set[str] = set()
-        if self._kill_hot_index:
-            related_titles |= self._kill_hot_index.get(entity_type, set())
-            related_titles |= self._kill_hot_index.get("*", set())
+        if self._activity_hot_index:
+            related_titles |= self._activity_hot_index.get(entity_type, set())
+            related_titles |= self._activity_hot_index.get("*", set())
         self._check_and_unlock_for_kill_related_titles(player, related_titles)
 
     def record_block_break(self, player: Player, block_id: str) -> None:
-        _ = player
-        _ = block_id
+        """核心已记账后调用：检查破坏类成就。"""
+        if not player:
+            return
+        block_id = str(block_id or "").strip()
+        if not block_id:
+            return
+        self._ensure_kill_hot_index()
+        related_titles: Set[str] = set()
+        if self._activity_hot_index:
+            related_titles |= self._activity_hot_index.get(f"break:{block_id}", set())
+            related_titles |= self._activity_hot_index.get("break:*", set())
+        self._check_and_unlock_for_kill_related_titles(player, related_titles)
+
+    def record_block_place(self, player: Player, block_id: str) -> None:
+        """核心已记账后调用：检查放置类成就。"""
+        if not player:
+            return
+        block_id = str(block_id or "").strip()
+        if not block_id:
+            return
+        self._ensure_kill_hot_index()
+        related_titles: Set[str] = set()
+        if self._activity_hot_index:
+            related_titles |= self._activity_hot_index.get(f"place:{block_id}", set())
+            related_titles |= self._activity_hot_index.get("place:*", set())
+        self._check_and_unlock_for_kill_related_titles(player, related_titles)
 
     # ---------- 成就（基础信息） ----------
     def list_achievements(self) -> List[Dict[str, Any]]:
@@ -1125,16 +1234,15 @@ class AchievementSystem:
             return False
 
         if old_unlock_title != new_unlock_title:
-            old_k = self._achievement_unlock_stat_key(old_unlock_title)
-            new_k = self._achievement_unlock_stat_key(new_unlock_title)
-            if old_k != new_k:
-                try:
-                    self.database_manager.execute(
-                        "UPDATE player_achievement_stats SET stat_key = ? WHERE stat_key = ?",
-                        (new_k, old_k),
-                    )
-                except Exception:
-                    pass
+            try:
+                conn = self._unlock_conn()
+                conn.execute(
+                    "UPDATE achievement_unlocks SET unlock_title = ? WHERE unlock_title = ?",
+                    (new_unlock_title, old_unlock_title),
+                )
+                conn.commit()
+            except Exception:
+                pass
 
         return True
 
@@ -1221,10 +1329,12 @@ class AchievementSystem:
         if not self._save_json_config(config_data):
             return False
         try:
-            self.database_manager.execute(
-                "DELETE FROM player_achievement_stats WHERE stat_key = ?",
-                (self._achievement_unlock_stat_key(unlock_title),),
+            conn = self._unlock_conn()
+            conn.execute(
+                "DELETE FROM achievement_unlocks WHERE unlock_title = ?",
+                (unlock_title,),
             )
+            conn.commit()
         except Exception:
             pass
         return True

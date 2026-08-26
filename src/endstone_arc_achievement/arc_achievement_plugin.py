@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from endstone import Player
-from endstone.event import event_handler, ActorDeathEvent, BlockBreakEvent
+from endstone.event import event_handler, ActorDeathEvent, BlockBreakEvent, BlockPlaceEvent, PlayerDeathEvent
 from endstone.form import ActionForm, ModalForm, TextInput, Dropdown
 from endstone.plugin import Plugin
 from endstone.command import Command, CommandSender
@@ -150,7 +150,7 @@ class ARCAchievementPlugin(Plugin):
                 return self.arc_core.api_unlock_title(player, title)
 
         self.achievement_system = AchievementSystem(
-            self.arc_core.database_manager,
+            self.arc_core,
             self._title_bridge,
             self.language_manager,
             _unlock_title_with_rarity,
@@ -169,7 +169,7 @@ class ARCAchievementPlugin(Plugin):
         except Exception as e:
             self.logger.error(f"[ARCAchievement] backfill achievement meta error: {e}")
         self.logger.info(
-            "[ARCAchievement] 已启用，数据目录 plugins/ARCAchievement/，统计库复用 arc_core。"
+            "[ARCAchievement] 已启用；活动统计经 arc_core API 查询，解锁标记存 plugins/ARCAchievement/achievement.db。"
         )
 
     def on_disable(self) -> None:
@@ -304,6 +304,16 @@ class ARCAchievementPlugin(Plugin):
         except Exception:
             pass
 
+    def _schedule_activity_check(self, callback) -> None:
+        """延迟 0 tick，确保同 tick 内弧光核心已写入活动统计。"""
+        try:
+            self.server.scheduler.run_task(self, callback, delay=0)
+        except Exception:
+            try:
+                callback()
+            except Exception:
+                pass
+
     @event_handler
     def on_actor_death(self, event: ActorDeathEvent):
         if self.achievement_system is None:
@@ -324,10 +334,40 @@ class ARCAchievementPlugin(Plugin):
             if not dead_type:
                 return
             dead_type_key = normalize_entity_type_id(str(dead_type))
-            self.achievement_system.record_kill(killer, dead_type_key)
+            self._schedule_activity_check(
+                lambda k=killer, t=dead_type_key: self.achievement_system.record_kill(k, t)
+            )
         except Exception as e:
             try:
                 self.logger.error(f"[ARCAchievement] on_actor_death error: {e}")
+            except Exception:
+                pass
+
+    @event_handler
+    def on_player_death(self, event: PlayerDeathEvent):
+        if self.achievement_system is None:
+            return
+        try:
+            damage_source = getattr(event, "damage_source", None)
+            killer = getattr(damage_source, "actor", None) if damage_source is not None else None
+            if killer is None:
+                for attr in ("killer", "damager"):
+                    killer = getattr(event, attr, None)
+                    if killer is not None:
+                        break
+            if killer is None:
+                return
+            if not (
+                isinstance(killer, Player)
+                or getattr(killer, "type", None) == "minecraft:player"
+            ):
+                return
+            self._schedule_activity_check(
+                lambda k=killer: self.achievement_system.record_kill(k, "minecraft:player")
+            )
+        except Exception as e:
+            try:
+                self.logger.error(f"[ARCAchievement] on_player_death error: {e}")
             except Exception:
                 pass
 
@@ -342,9 +382,38 @@ class ARCAchievementPlugin(Plugin):
             block = getattr(event, "block", None)
             if player is None or block is None:
                 return
-            block_id = getattr(block, "type", None) or getattr(block, "type_id", None) or ""
+            block_id = getattr(block, "type", None) or getattr(block, "type_id", None) or getattr(block, "identifier", None) or ""
             if block_id:
-                self.achievement_system.record_block_break(player, str(block_id))
+                bid = normalize_entity_type_id(str(block_id))
+                self._schedule_activity_check(
+                    lambda p=player, b=bid: self.achievement_system.record_block_break(p, b)
+                )
+        except Exception:
+            pass
+
+    @event_handler
+    def on_block_place(self, event: BlockPlaceEvent):
+        if self.achievement_system is None:
+            return
+        try:
+            if getattr(event, "is_cancelled", False):
+                return
+            player = getattr(event, "player", None)
+            if player is None:
+                return
+            placed = getattr(event, "block_placed", None) or getattr(event, "block", None)
+            block_id = ""
+            if placed is not None:
+                block_id = (
+                    getattr(placed, "type", None)
+                    or getattr(placed, "identifier", None)
+                    or ""
+                )
+            if block_id:
+                bid = normalize_entity_type_id(str(block_id))
+                self._schedule_activity_check(
+                    lambda p=player, b=bid: self.achievement_system.record_block_place(p, b)
+                )
         except Exception:
             pass
 
@@ -501,6 +570,24 @@ class ARCAchievementPlugin(Plugin):
                 return self.language_manager.GetText('ACHIEVEMENT_CONDITION_KILL_ANY').format(req)
             label = self._achievement_entity_label_for_player(tid)
             return self.language_manager.GetText('ACHIEVEMENT_CONDITION_KILL_ONE').format(label, req)
+        if ct == achievement_system.condition_type_break_block_sum:
+            target_ids = achievement_system._normalize_target_ids_list(condition_data.get("target_ids"))
+            joined = "、".join(target_ids)
+            return f"累计破坏下列方块合计不少于 {req} 次：{joined}"
+        if ct == achievement_system.condition_type_break_block:
+            tid = str(condition_data.get("target_id") or "").strip()
+            if tid == "*":
+                return f"累计破坏任意方块不少于 {req} 次。"
+            return f"累计破坏 {tid} 不少于 {req} 次。"
+        if ct == achievement_system.condition_type_place_block_sum:
+            target_ids = achievement_system._normalize_target_ids_list(condition_data.get("target_ids"))
+            joined = "、".join(target_ids)
+            return f"累计放置下列方块合计不少于 {req} 次：{joined}"
+        if ct == achievement_system.condition_type_place_block:
+            tid = str(condition_data.get("target_id") or "").strip()
+            if tid == "*":
+                return f"累计放置任意方块不少于 {req} 次。"
+            return f"累计放置 {tid} 不少于 {req} 次。"
         return self.language_manager.GetText('ACHIEVEMENT_CONDITION_UNKNOWN').format(ct, req)
 
     def _build_my_achievement_detail_body(
@@ -838,6 +925,22 @@ class ARCAchievementPlugin(Plugin):
                     condition_text = f"累计击杀任意生物 >= {required_count}"
                 else:
                     condition_text = f"击杀 {target_id} >= {required_count}"
+            elif condition_type == self.achievement_system.condition_type_break_block_sum:
+                ids_joined = ", ".join(condition_row.get("target_ids") or [])
+                condition_text = f"破坏总和 [{ids_joined}] >= {required_count}"
+            elif condition_type == self.achievement_system.condition_type_break_block:
+                if target_id == "*":
+                    condition_text = f"累计破坏任意方块 >= {required_count}"
+                else:
+                    condition_text = f"破坏 {target_id} >= {required_count}"
+            elif condition_type == self.achievement_system.condition_type_place_block_sum:
+                ids_joined = ", ".join(condition_row.get("target_ids") or [])
+                condition_text = f"放置总和 [{ids_joined}] >= {required_count}"
+            elif condition_type == self.achievement_system.condition_type_place_block:
+                if target_id == "*":
+                    condition_text = f"累计放置任意方块 >= {required_count}"
+                else:
+                    condition_text = f"放置 {target_id} >= {required_count}"
             else:
                 condition_text = f"{condition_type}:{target_id} >= {required_count}"
             panel.add_button(

@@ -25,7 +25,7 @@ def _safe_int(value: Any, default_value: int = 0) -> int:
 
 
 class AchievementConditionBase(ABC):
-    """成就条件抽象基类：子类实现 check_if_satisfied 与击杀索引键。"""
+    """成就条件抽象基类：子类实现 check_if_satisfied 与活动索引键。"""
 
     def __init__(self, condition_id: int, raw_dict: Dict[str, Any]):
         self.condition_id = int(condition_id)
@@ -40,12 +40,15 @@ class AchievementConditionBase(ABC):
     def check_if_satisfied(self, ctx: AchievementCheckContext) -> bool:
         """当前玩家是否满足该条条件。"""
 
+    def activity_index_keys(self) -> List[str]:
+        """
+        建立「活动键 → 成就 unlock_title」索引时用到的键。
+        击杀：minecraft:xxx 或 '*'；破坏：break:* / break:id；放置：place:* / place:id。
+        """
+        return []
+
     def kill_index_entity_keys(self) -> List[str]:
-        """
-        建立「生物类型 → 成就 unlock_title」索引时用到的键。
-        仅击杀类条件返回非空；其它类型返回 []。
-        键为 minecraft:xxx 或 '*'（任意生物累计，对应 kill_total）。
-        """
+        """兼容旧名：仅返回击杀类索引键。"""
         return []
 
 
@@ -71,10 +74,13 @@ class KillEntityKillCountCondition(AchievementConditionBase):
             return False
         return sys._get_stat_count(ctx.xuid, stat_key) >= self.required_count
 
-    def kill_index_entity_keys(self) -> List[str]:
+    def activity_index_keys(self) -> List[str]:
         if not self.target_id:
             return []
         return [self.target_id]
+
+    def kill_index_entity_keys(self) -> List[str]:
+        return self.activity_index_keys()
 
 
 class KillEntityKillCountSumCondition(AchievementConditionBase):
@@ -102,8 +108,76 @@ class KillEntityKillCountSumCondition(AchievementConditionBase):
                 total_sum += sys._get_stat_count(ctx.xuid, stat_key)
         return total_sum >= self.required_count
 
-    def kill_index_entity_keys(self) -> List[str]:
+    def activity_index_keys(self) -> List[str]:
         return list(self.target_ids)
+
+    def kill_index_entity_keys(self) -> List[str]:
+        return self.activity_index_keys()
+
+
+class BlockCountCondition(AchievementConditionBase):
+    """单目标破坏/放置：break_block / place_block，target_id=* 表示总数。"""
+
+    def __init__(self, condition_id: int, raw_dict: Dict[str, Any], type_key: str):
+        super().__init__(condition_id, raw_dict)
+        self._type_key = type_key
+        self.target_id = str(raw_dict.get("target_id") or "").strip()
+        self.required_count = _safe_int(raw_dict.get("required_count"), 0)
+
+    @property
+    def condition_type(self) -> str:
+        return self._type_key
+
+    def check_if_satisfied(self, ctx: AchievementCheckContext) -> bool:
+        if self.required_count <= 0:
+            return False
+        sys = ctx.achievement_system
+        stat_key = sys._build_stat_key(self._type_key, self.target_id)
+        if not stat_key:
+            return False
+        return sys._get_stat_count(ctx.xuid, stat_key) >= self.required_count
+
+    def activity_index_keys(self) -> List[str]:
+        if not self.target_id:
+            return []
+        prefix = "break:" if self._type_key == "break_block" else "place:"
+        if self.target_id == "*":
+            return [prefix + "*"]
+        return [prefix + self.target_id]
+
+
+class BlockCountSumCondition(AchievementConditionBase):
+    """多目标破坏/放置数相加：break_block_sum / place_block_sum。"""
+
+    def __init__(self, condition_id: int, raw_dict: Dict[str, Any], type_key: str, target_ids: List[str]):
+        super().__init__(condition_id, raw_dict)
+        self._type_key = type_key
+        self.target_ids = list(target_ids)
+        self.required_count = _safe_int(raw_dict.get("required_count"), 0)
+
+    @property
+    def condition_type(self) -> str:
+        return self._type_key
+
+    def check_if_satisfied(self, ctx: AchievementCheckContext) -> bool:
+        if self.required_count <= 0 or not self.target_ids:
+            return False
+        sys = ctx.achievement_system
+        single = (
+            sys.condition_type_break_block
+            if self._type_key == sys.condition_type_break_block_sum
+            else sys.condition_type_place_block
+        )
+        total_sum = 0
+        for block_id in self.target_ids:
+            stat_key = sys._build_stat_key(single, block_id)
+            if stat_key:
+                total_sum += sys._get_stat_count(ctx.xuid, stat_key)
+        return total_sum >= self.required_count
+
+    def activity_index_keys(self) -> List[str]:
+        prefix = "break:" if "break" in self._type_key else "place:"
+        return [prefix + tid for tid in self.target_ids]
 
 
 def build_achievement_condition_from_dict(
@@ -112,10 +186,13 @@ def build_achievement_condition_from_dict(
     kill_entity_sum_type: str,
     normalize_target_ids_fn,
     safe_int_fn,
+    break_block_type: str = "break_block",
+    break_block_sum_type: str = "break_block_sum",
+    place_block_type: str = "place_block",
+    place_block_sum_type: str = "place_block_sum",
 ) -> Optional[AchievementConditionBase]:
     """
     由 JSON 条件字典构造条件对象；未知类型返回 None。
-    normalize_target_ids_fn: 与 AchievementSystem._normalize_target_ids_list 相同签名。
     """
     condition_type = str(raw_dict.get("type") or raw_dict.get("condition_type") or "").strip()
     condition_id = safe_int_fn(raw_dict.get("id"), 0)
@@ -123,18 +200,26 @@ def build_achievement_condition_from_dict(
         return None
     required_count = safe_int_fn(raw_dict.get("required_count"), 0)
 
-    if condition_type == kill_entity_sum_type:
+    if condition_type in (kill_entity_sum_type, break_block_sum_type, place_block_sum_type):
         target_ids = normalize_target_ids_fn(raw_dict.get("target_ids"))
         if not target_ids and raw_dict.get("target_id"):
             target_ids = normalize_target_ids_fn(str(raw_dict.get("target_id") or ""))
         if len(target_ids) < 1 or required_count <= 0:
             return None
-        return KillEntityKillCountSumCondition(condition_id, raw_dict, kill_entity_sum_type, target_ids)
+        if condition_type == kill_entity_sum_type:
+            return KillEntityKillCountSumCondition(condition_id, raw_dict, kill_entity_sum_type, target_ids)
+        return BlockCountSumCondition(condition_id, raw_dict, condition_type, target_ids)
 
     if condition_type == kill_entity_type:
         target_id = str(raw_dict.get("target_id") or "").strip()
         if not target_id or required_count <= 0:
             return None
         return KillEntityKillCountCondition(condition_id, raw_dict, kill_entity_type)
+
+    if condition_type in (break_block_type, place_block_type):
+        target_id = str(raw_dict.get("target_id") or "").strip()
+        if not target_id or required_count <= 0:
+            return None
+        return BlockCountCondition(condition_id, raw_dict, condition_type)
 
     return None
