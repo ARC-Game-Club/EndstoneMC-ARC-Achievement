@@ -105,7 +105,7 @@ python -m build --wheel
 - `api_has_title_definition(title, rarity)` / `api_ensure_title_definition` / `api_get_title_definition`（按名称+稀有度）
 - `api_unlock_title(player, title, rarity=...)` / `api_has_unlocked_title(..., rarity=...)`
 - `increase_player_money` / `api_give_player_items`
-- 复用 `arc_core.database_manager` 读写 `player_achievement_stats`
+- 击杀/破坏/放置统计：经核心只读 API（`api_get_player_kill_count` 等）；解锁标记存本插件 `achievement.db`（启动时只读迁移核心旧表 `ach_unlock:*`，若仍存在）
 
 未找到 `arc_core` 时，本插件会打错误日志并禁用成就逻辑。
 
