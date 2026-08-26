@@ -137,12 +137,16 @@ class AchievementSystem:
         unlock_title_func,
         main_path: str = "plugins/ARCAchievement",
         announce_achievement_unlock_func=None,
+        grant_money_func=None,
+        grant_items_func=None,
     ):
         self.database_manager = database_manager
         self.title_system = title_system
         self.language_manager = language_manager
         self.unlock_title_func = unlock_title_func
         self.announce_achievement_unlock_func = announce_achievement_unlock_func
+        self.grant_money_func = grant_money_func
+        self.grant_items_func = grant_items_func
 
         self._main_path = Path(main_path)
         self._achievement_json_path = self._main_path / "achievements.json"
@@ -200,6 +204,47 @@ class AchievementSystem:
     def _normalize_logic(self, logic_value: Any) -> str:
         _ = logic_value
         return self.logic_all
+
+    @staticmethod
+    def _normalize_rarity_name(rarity: Any) -> str:
+        """兼容“传说”写法，统一映射到 TitleSystem 支持的稀有度文本。"""
+        r = str(rarity or "").strip()
+        if r == "传说":
+            return "传奇"
+        return r or "普通"
+
+    @staticmethod
+    def _normalize_reward_items(raw_value: Any) -> List[Dict[str, Any]]:
+        if not isinstance(raw_value, list):
+            return []
+        out: List[Dict[str, Any]] = []
+        for item in raw_value:
+            if not isinstance(item, dict):
+                continue
+            item_name = str(item.get("item_name") or item.get("id") or "").strip()
+            try:
+                count = int(item.get("count") or 0)
+            except (TypeError, ValueError):
+                count = 0
+            if not item_name or count <= 0:
+                continue
+            out.append({"item_name": item_name, "count": count})
+        return out
+
+    def _normalize_reward_money(self, raw_value: Any) -> float:
+        try:
+            money = float(raw_value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        return money if money > 0 else 0.0
+
+    def _achievement_reward_fields(self, achievement_data: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "rarity": self._normalize_rarity_name(achievement_data.get("rarity")),
+            "description": str(achievement_data.get("description") or "").strip(),
+            "reward_money": self._normalize_reward_money(achievement_data.get("reward_money")),
+            "reward_items": self._normalize_reward_items(achievement_data.get("reward_items")),
+        }
 
     @staticmethod
     def _normalize_target_ids_list(raw_value: Any) -> List[str]:
@@ -300,6 +345,7 @@ class AchievementSystem:
                         "if_hidden": if_hidden,
                         "logic": logic_value,
                         "conditions": normalized_conditions,
+                        **self._achievement_reward_fields(achievement_data),
                     }
                 )
 
@@ -744,22 +790,11 @@ class AchievementSystem:
         except Exception:
             return str(value)
 
-    def _build_unlock_reward_toast_bits(self, unlock_title: str) -> List[str]:
-        """组装 toast 副文案用的奖品片段：存款、物品。"""
+    def _build_unlock_reward_toast_bits(self, achievement_data: Dict[str, Any]) -> List[str]:
+        """组装 toast 副文案用的奖品片段：存款、物品（来自成就配置）。"""
         bits: List[str] = []
-        defn = None
-        try:
-            get_defn = getattr(self.title_system, "get_title_definition", None)
-            if callable(get_defn):
-                defn = get_defn(unlock_title)
-        except Exception:
-            defn = None
-        if not defn:
-            return bits
-        try:
-            money = float(defn.get("reward_money") or 0)
-        except (TypeError, ValueError):
-            money = 0.0
+        fields = self._achievement_reward_fields(achievement_data)
+        money = float(fields.get("reward_money") or 0.0)
         if money > 0:
             money_tpl = self.language_manager.GetText("ACHIEVEMENT_UNLOCKED_TOAST_MONEY")
             money_text = self._format_reward_money_plain(money)
@@ -767,10 +802,8 @@ class AchievementSystem:
                 bits.append(money_tpl.format(money_text))
             else:
                 bits.append(f"存款 {money_text}")
-        for item in defn.get("reward_items") or []:
-            if not isinstance(item, dict):
-                continue
-            item_name = str(item.get("item_name") or item.get("id") or "").strip()
+        for item in fields.get("reward_items") or []:
+            item_name = str(item.get("item_name") or "").strip()
             try:
                 count = int(item.get("count") or 0)
             except (TypeError, ValueError):
@@ -784,8 +817,57 @@ class AchievementSystem:
                 bits.append(f"{item_name}×{count}")
         return bits
 
+    def _grant_achievement_rewards(self, player: Player, achievement_data: Dict[str, Any]) -> None:
+        """按成就配置发放金钱与物品（不再走核心头衔解锁奖励）。"""
+        fields = self._achievement_reward_fields(achievement_data)
+        money = float(fields.get("reward_money") or 0.0)
+        if money > 0 and callable(self.grant_money_func):
+            try:
+                self.grant_money_func(player, money)
+            except Exception:
+                pass
+        items = fields.get("reward_items") or []
+        if items and callable(self.grant_items_func):
+            try:
+                self.grant_items_func(player, items)
+            except Exception:
+                pass
+
+    def _ensure_unlock_title_registered(self, achievement_data: Dict[str, Any]) -> None:
+        """解锁前：若核心未注册该头衔，则仅写入稀有度/介绍等基本属性。"""
+        unlock_title = str(achievement_data.get("unlock_title") or "").strip()
+        if not unlock_title:
+            return
+        fields = self._achievement_reward_fields(achievement_data)
+        has_def = False
+        try:
+            has_fn = getattr(self.title_system, "has_title_definition", None)
+            if callable(has_fn):
+                has_def = bool(has_fn(unlock_title))
+            else:
+                get_defn = getattr(self.title_system, "get_title_definition", None)
+                has_def = bool(callable(get_defn) and get_defn(unlock_title))
+        except Exception:
+            has_def = False
+        if has_def:
+            return
+        try:
+            self.title_system.ensure_title_definition(
+                unlock_title,
+                fields.get("rarity") or "普通",
+                fields.get("description") or "",
+                0.0,
+                [],
+            )
+        except Exception:
+            pass
+
     def _send_achievement_unlock_toast(
-        self, player: Player, achievement_name: str, unlock_title: str
+        self,
+        player: Player,
+        achievement_name: str,
+        unlock_title: str,
+        achievement_data: Optional[Dict[str, Any]] = None,
     ) -> None:
         """用 send_toast 弹出成就解锁与奖品提示（失败则退回聊天）。"""
         ach_name = str(achievement_name or unlock_title or "").strip()
@@ -796,7 +878,7 @@ class AchievementSystem:
         title_tpl = self.language_manager.GetText("ACHIEVEMENT_UNLOCKED_TOAST_TITLE")
         toast_title = title_tpl.format(ach_name) if title_tpl else f"成就解锁：{ach_name}"
 
-        reward_bits = self._build_unlock_reward_toast_bits(unlock_title)
+        reward_bits = self._build_unlock_reward_toast_bits(achievement_data or {})
         sep = self.language_manager.GetText("ACHIEVEMENT_UNLOCKED_TOAST_SEP") or " · "
         reward_text = sep.join(reward_bits) if reward_bits else ""
 
@@ -837,7 +919,7 @@ class AchievementSystem:
             return
         if not self._achievement_conditions_met(xuid, achievement_data):
             return
-        self.title_system.ensure_title_definition(unlock_title)
+        self._ensure_unlock_title_registered(achievement_data)
         try:
             self.unlock_title_func(player, unlock_title)
         except Exception:
@@ -846,7 +928,11 @@ class AchievementSystem:
         if first_unlock:
             ach_name = str(achievement_data.get("name") or "").strip()
             try:
-                self._send_achievement_unlock_toast(player, ach_name, unlock_title)
+                self._grant_achievement_rewards(player, achievement_data)
+            except Exception:
+                pass
+            try:
+                self._send_achievement_unlock_toast(player, ach_name, unlock_title, achievement_data)
             except Exception:
                 pass
             try:
@@ -917,7 +1003,15 @@ class AchievementSystem:
         return None
 
     def create_achievement(
-        self, name: str, unlock_title: str, enabled: bool = True, if_hidden: bool = False
+        self,
+        name: str,
+        unlock_title: str,
+        enabled: bool = True,
+        if_hidden: bool = False,
+        rarity: str = "普通",
+        description: str = "",
+        reward_money: float = 0.0,
+        reward_items: Optional[List] = None,
     ) -> bool:
         name = (name or "").strip()
         unlock_title = (unlock_title or "").strip()
@@ -928,6 +1022,14 @@ class AchievementSystem:
         for achievement_data in achievement_list:
             if str(achievement_data.get("unlock_title") or "").strip() == unlock_title:
                 return False
+        meta = self._achievement_reward_fields(
+            {
+                "rarity": rarity,
+                "description": description,
+                "reward_money": reward_money,
+                "reward_items": reward_items if reward_items is not None else [],
+            }
+        )
         achievement_list.append(
             {
                 "name": name,
@@ -936,6 +1038,7 @@ class AchievementSystem:
                 "if_hidden": bool(if_hidden),
                 "logic": self.logic_all,
                 "conditions": [],
+                **meta,
             }
         )
         config_data["achievements"] = achievement_list
@@ -948,6 +1051,10 @@ class AchievementSystem:
         new_unlock_title: str,
         enabled: bool,
         if_hidden: bool = False,
+        rarity: str = "普通",
+        description: str = "",
+        reward_money: float = 0.0,
+        reward_items: Optional[List] = None,
     ) -> bool:
         old_unlock_title = (old_unlock_title or "").strip()
         new_unlock_title = (new_unlock_title or "").strip()
@@ -967,11 +1074,20 @@ class AchievementSystem:
         if target_index < 0:
             return False
 
+        meta = self._achievement_reward_fields(
+            {
+                "rarity": rarity,
+                "description": description,
+                "reward_money": reward_money,
+                "reward_items": reward_items if reward_items is not None else [],
+            }
+        )
         achievement_list[target_index]["name"] = name
         achievement_list[target_index]["unlock_title"] = new_unlock_title
         achievement_list[target_index]["enabled"] = bool(enabled)
         achievement_list[target_index]["if_hidden"] = bool(if_hidden)
         achievement_list[target_index]["logic"] = self.logic_all
+        achievement_list[target_index].update(meta)
 
         config_data["achievements"] = achievement_list
         if not self._save_json_config(config_data):
@@ -990,6 +1106,55 @@ class AchievementSystem:
                     pass
 
         return True
+
+    def backfill_meta_from_title_definitions(self) -> int:
+        """
+        一次性迁移：若成就本地尚未配置稀有度/介绍/奖励，则从核心头衔定义回填。
+        返回写入字段的成就条数。
+        """
+        config_data = self._load_json_config()
+        achievement_list = config_data.get("achievements") or []
+        if not isinstance(achievement_list, list):
+            return 0
+        changed = 0
+        for achievement_data in achievement_list:
+            if not isinstance(achievement_data, dict):
+                continue
+            unlock_title = str(achievement_data.get("unlock_title") or "").strip()
+            if not unlock_title:
+                continue
+            try:
+                defn = self.title_system.get_title_definition(unlock_title)
+            except Exception:
+                defn = None
+            if not defn:
+                continue
+            touched = False
+            cur = self._achievement_reward_fields(achievement_data)
+            defn_rarity = self._normalize_rarity_name(defn.get("rarity"))
+            defn_desc = str(defn.get("description") or "").strip()
+            defn_money = self._normalize_reward_money(defn.get("reward_money"))
+            defn_items = self._normalize_reward_items(defn.get("reward_items"))
+            if (not cur.get("description")) and defn_desc:
+                achievement_data["description"] = defn_desc
+                touched = True
+            if (cur.get("rarity") or "普通") == "普通" and defn_rarity != "普通":
+                achievement_data["rarity"] = defn_rarity
+                touched = True
+            if float(cur.get("reward_money") or 0) <= 0 and defn_money > 0:
+                achievement_data["reward_money"] = defn_money
+                touched = True
+            if not (cur.get("reward_items") or []) and defn_items:
+                achievement_data["reward_items"] = defn_items
+                touched = True
+            if touched:
+                achievement_data.update(self._achievement_reward_fields(achievement_data))
+                changed += 1
+        if changed:
+            config_data["achievements"] = achievement_list
+            if not self._save_json_config(config_data):
+                return 0
+        return changed
 
     def set_achievement_enabled(self, unlock_title: str, enabled: bool) -> bool:
         unlock_title = (unlock_title or "").strip()
@@ -1215,32 +1380,10 @@ class AchievementSystem:
         config_data["achievements"] = achievement_list
         return self._save_json_config(config_data)
 
-    def apply_default_kill_title_definitions(self, title_system) -> bool:
-        """
-        仅根据内置表写入头衔定义（title_definitions）：稀有度、介绍、金钱、物品。
-        应在写入成就条件之前调用。
-        """
+    def apply_default_kill_achievement_bundle(self, title_system=None) -> bool:
+        """写入默认击杀成就（含稀有度/介绍/奖励到成就 JSON）。头衔注册延后到解锁时。"""
+        _ = title_system
         try:
-            for entry in _DEFAULT_KILL_ACHIEVEMENT_BUNDLE:
-                unlock_title = str(entry.get("unlock_title") or "").strip()
-                if not unlock_title:
-                    continue
-                rarity = str(entry.get("rarity") or "普通").strip()
-                description = str(entry.get("description") or "").strip()
-                reward_money = float(entry.get("reward_money") or 0.0)
-                reward_items = entry.get("reward_items") or []
-                if not isinstance(reward_items, list):
-                    reward_items = []
-                title_system.set_title_definition(unlock_title, rarity, description, reward_money, reward_items)
-            return True
-        except Exception:
-            return False
-
-    def apply_default_kill_achievement_bundle(self, title_system) -> bool:
-        """先写入默认头衔定义，再写入成就条件（多生物为击杀数相加）。"""
-        try:
-            if not self.apply_default_kill_title_definitions(title_system):
-                return False
             config_data = self._load_json_config()
             achievement_list = config_data.get("achievements") or []
             if not isinstance(achievement_list, list):
@@ -1274,25 +1417,21 @@ class AchievementSystem:
                         "required_count": required_count,
                     }
                 next_condition_id += 1
+                meta = self._achievement_reward_fields(entry)
+                payload = {
+                    "name": name,
+                    "unlock_title": unlock_title,
+                    "enabled": True,
+                    "if_hidden": False,
+                    "logic": self.logic_all,
+                    "conditions": [cond_obj],
+                    **meta,
+                }
                 if unlock_title in title_index_map:
                     idx = title_index_map[unlock_title]
-                    achievement_list[idx]["name"] = name
-                    achievement_list[idx]["unlock_title"] = unlock_title
-                    achievement_list[idx]["enabled"] = True
-                    achievement_list[idx]["if_hidden"] = False
-                    achievement_list[idx]["logic"] = self.logic_all
-                    achievement_list[idx]["conditions"] = [cond_obj]
+                    achievement_list[idx].update(payload)
                 else:
-                    achievement_list.append(
-                        {
-                            "name": name,
-                            "unlock_title": unlock_title,
-                            "enabled": True,
-                            "if_hidden": False,
-                            "logic": self.logic_all,
-                            "conditions": [cond_obj],
-                        }
-                    )
+                    achievement_list.append(payload)
                     title_index_map[unlock_title] = len(achievement_list) - 1
             config_data["achievements"] = achievement_list
             return self._save_json_config(config_data)
@@ -1303,44 +1442,10 @@ class AchievementSystem:
     def get_default_kill_bundle_size() -> int:
         return DEFAULT_KILL_ACHIEVEMENT_ENTRY_COUNT
 
-    @staticmethod
-    def _normalize_rarity_name(rarity: Any) -> str:
-        """兼容“传说”写法，统一映射到 TitleSystem 支持的稀有度文本。"""
-        r = str(rarity or "").strip()
-        if r == "传说":
-            return "传奇"
-        return r or "普通"
-
-    def apply_horror_kill_title_definitions(self, title_system) -> bool:
-        """
-        根据恐怖服成就表写入头衔定义（title_definitions）：
-        - 若头衔已存在则跳过（不覆盖服主已手动创建/调整的定义）
-        - description 写入“猎杀奖励”提示，方便在 OP 面板查看
-        """
+    def apply_horror_kill_achievement_bundle(self, title_system=None) -> bool:
+        """写入恐怖服击杀成就（奖励写在成就 JSON；头衔解锁时再注册）。"""
+        _ = title_system
         try:
-            for entry in _HORROR_KILL_ACHIEVEMENT_BUNDLE:
-                unlock_title = str(entry.get("unlock_title") or "").strip()
-                if not unlock_title:
-                    continue
-                if title_system.get_title_definition(unlock_title):
-                    continue
-                rarity = self._normalize_rarity_name(entry.get("rarity"))
-                kill_reward_money = float(entry.get("kill_reward_money") or 0.0)
-                description = f"猎杀奖励: {int(kill_reward_money) if kill_reward_money.is_integer() else kill_reward_money}"
-                reward_money = float(entry.get("reward_money") or 0.0)
-                reward_items = entry.get("reward_items") or []
-                if not isinstance(reward_items, list):
-                    reward_items = []
-                title_system.ensure_title_definition(unlock_title, rarity, description, reward_money, reward_items)
-            return True
-        except Exception:
-            return False
-
-    def apply_horror_kill_achievement_bundle(self, title_system) -> bool:
-        """先写入恐怖服头衔定义（跳过已存在），再写入对应击杀成就条件。"""
-        try:
-            if not self.apply_horror_kill_title_definitions(title_system):
-                return False
             config_data = self._load_json_config()
             achievement_list = config_data.get("achievements") or []
             if not isinstance(achievement_list, list):
@@ -1367,25 +1472,34 @@ class AchievementSystem:
                 }
                 next_condition_id += 1
 
+                kill_reward_money = float(entry.get("kill_reward_money") or 0.0)
+                description = str(entry.get("description") or "").strip()
+                if not description:
+                    description = (
+                        f"猎杀奖励: {int(kill_reward_money) if kill_reward_money.is_integer() else kill_reward_money}"
+                    )
+                meta = self._achievement_reward_fields(
+                    {
+                        "rarity": entry.get("rarity"),
+                        "description": description,
+                        "reward_money": entry.get("reward_money"),
+                        "reward_items": entry.get("reward_items"),
+                    }
+                )
+                payload = {
+                    "name": name,
+                    "unlock_title": unlock_title,
+                    "enabled": True,
+                    "if_hidden": False,
+                    "logic": self.logic_all,
+                    "conditions": [cond_obj],
+                    **meta,
+                }
                 if unlock_title in title_index_map:
                     idx = title_index_map[unlock_title]
-                    achievement_list[idx]["name"] = name
-                    achievement_list[idx]["unlock_title"] = unlock_title
-                    achievement_list[idx]["enabled"] = True
-                    achievement_list[idx]["if_hidden"] = False
-                    achievement_list[idx]["logic"] = self.logic_all
-                    achievement_list[idx]["conditions"] = [cond_obj]
+                    achievement_list[idx].update(payload)
                 else:
-                    achievement_list.append(
-                        {
-                            "name": name,
-                            "unlock_title": unlock_title,
-                            "enabled": True,
-                            "if_hidden": False,
-                            "logic": self.logic_all,
-                            "conditions": [cond_obj],
-                        }
-                    )
+                    achievement_list.append(payload)
                     title_index_map[unlock_title] = len(achievement_list) - 1
 
             config_data["achievements"] = achievement_list

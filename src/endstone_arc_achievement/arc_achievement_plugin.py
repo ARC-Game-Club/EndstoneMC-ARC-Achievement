@@ -38,6 +38,12 @@ class _TitleBridge:
     def has_unlocked_title_by_xuid(self, xuid: str, title: str) -> bool:
         return bool(self._arc.api_has_unlocked_title(title, xuid=str(xuid or "")))
 
+    def has_title_definition(self, title: str) -> bool:
+        has_fn = getattr(self._arc, "api_has_title_definition", None)
+        if callable(has_fn):
+            return bool(has_fn(title))
+        return self.get_title_definition(title) is not None
+
     def ensure_title_definition(
         self,
         title: str,
@@ -46,18 +52,23 @@ class _TitleBridge:
         reward_money: float = 0.0,
         reward_items=None,
     ) -> bool:
+        # 成就侧只注册头衔基本属性；金钱/物品奖励由成就插件自行发放
+        _ = reward_money
+        _ = reward_items
         return bool(
             self._arc.api_ensure_title_definition(
-                title, rarity, description, reward_money, reward_items
+                title, rarity, description, 0.0, []
             )
         )
 
     def set_title_definition(
-        self, title: str, rarity: str, description: str, reward_money: float, reward_items
+        self, title: str, rarity: str, description: str, reward_money: float = 0.0, reward_items=None
     ) -> bool:
+        _ = reward_money
+        _ = reward_items
         return bool(
             self._arc.api_set_title_definition(
-                title, rarity, description, reward_money, reward_items
+                title, rarity, description, 0.0, []
             )
         )
 
@@ -116,8 +127,18 @@ class ARCAchievementPlugin(Plugin):
             self.arc_core.api_unlock_title,
             MAIN_PATH,
             self._announce_achievement_unlock,
+            grant_money_func=self.arc_core.increase_player_money,
+            grant_items_func=self.arc_core.api_give_player_items,
         )
         self.achievement_system.ensure_tables()
+        try:
+            migrated = self.achievement_system.backfill_meta_from_title_definitions()
+            if migrated:
+                self.logger.info(
+                    f"[ARCAchievement] 已从核心头衔定义回填 {migrated} 条成就的稀有度/介绍/奖励。"
+                )
+        except Exception as e:
+            self.logger.error(f"[ARCAchievement] backfill achievement meta error: {e}")
         self.logger.info(
             "[ARCAchievement] 已启用，数据目录 plugins/ARCAchievement/，统计库复用 arc_core。"
         )
@@ -486,26 +507,42 @@ class ARCAchievementPlugin(Plugin):
                 line = self._format_player_achievement_condition_line(cond)
                 lines.append(self.language_manager.GetText('ACHIEVEMENT_DETAIL_CONDITION_BULLET').format(idx, line))
                 idx += 1
-        defn = self._title_bridge.get_title_definition(unlock_title)
-        if defn:
-            rarity = str(defn.get("rarity") or "").strip()
-            desc = str(defn.get("description") or "").strip()
-            reward_money = defn.get("reward_money")
-            if rarity:
-                lines.append("")
-                lines.append(self.language_manager.GetText('ACHIEVEMENT_DETAIL_LINE_RARITY').format(rarity))
-            if desc:
-                lines.append(self.language_manager.GetText('ACHIEVEMENT_DETAIL_LINE_DESC').format(desc))
-            try:
-                rm = float(reward_money or 0)
-                if rm > 0:
-                    lines.append(
-                        self.language_manager.GetText('ACHIEVEMENT_DETAIL_LINE_REWARD_MONEY').format(
-                            self._format_money_display(rm)
-                        )
+        defn_rarity = str(achievement_data.get("rarity") or "").strip()
+        desc = str(achievement_data.get("description") or "").strip()
+        reward_money = achievement_data.get("reward_money")
+        reward_items = achievement_data.get("reward_items") or []
+        if defn_rarity:
+            lines.append("")
+            lines.append(self.language_manager.GetText('ACHIEVEMENT_DETAIL_LINE_RARITY').format(defn_rarity))
+        if desc:
+            lines.append(self.language_manager.GetText('ACHIEVEMENT_DETAIL_LINE_DESC').format(desc))
+        try:
+            rm = float(reward_money or 0)
+            if rm > 0:
+                lines.append(
+                    self.language_manager.GetText('ACHIEVEMENT_DETAIL_LINE_REWARD_MONEY').format(
+                        self._format_money_display(rm)
                     )
+                )
+        except (TypeError, ValueError):
+            pass
+        item_bits = []
+        for item in reward_items if isinstance(reward_items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            item_name = str(item.get("item_name") or item.get("id") or "").strip()
+            try:
+                count = int(item.get("count") or 0)
             except (TypeError, ValueError):
-                pass
+                count = 0
+            if item_name and count > 0:
+                item_bits.append(f"{item_name}×{count}")
+        if item_bits:
+            lines.append(
+                self.language_manager.GetText('ACHIEVEMENT_DETAIL_LINE_REWARD_ITEMS').format(
+                    "、".join(item_bits)
+                )
+            )
         return "\n".join(lines)
 
     def show_my_achievement_detail(self, player: Player, unlock_title: str, return_mode: str):
@@ -587,8 +624,42 @@ class ARCAchievementPlugin(Plugin):
                          on_click=self.show_op_achievement_manage_panel)
         player.send_form(panel)
 
+    @staticmethod
+    def _parse_reward_items_text(text: str) -> list:
+        """解析 '物品ID 数量; 物品ID 数量' 为 [{"item_name": id, "count": n}, ...]"""
+        result = []
+        for part in str(text or "").replace("；", ";").split(";"):
+            tokens = [t for t in part.strip().split() if t]
+            if not tokens:
+                continue
+            try:
+                if len(tokens) >= 2:
+                    result.append({"item_name": tokens[0], "count": int(tokens[1])})
+                else:
+                    result.append({"item_name": tokens[0], "count": 1})
+            except (TypeError, ValueError):
+                continue
+        return result
+
+    @staticmethod
+    def _format_reward_items_text(items) -> str:
+        if not isinstance(items, list):
+            return ""
+        bits = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_name = str(item.get("item_name") or item.get("id") or "").strip()
+            try:
+                count = int(item.get("count") or 0)
+            except (TypeError, ValueError):
+                count = 0
+            if item_name and count > 0:
+                bits.append(f"{item_name} {count}")
+        return "; ".join(bits)
+
     def show_op_achievement_create_panel(self, player: Player):
-        """创建成就基础信息。"""
+        """创建成就基础信息（含稀有度/介绍/奖励）。"""
         name_input = TextInput(
             label=self.language_manager.GetText("OP_ACHIEVEMENT_FIELD_NAME"),
             placeholder="例如：僵尸杀手",
@@ -597,6 +668,26 @@ class ARCAchievementPlugin(Plugin):
         title_input = TextInput(
             label=self.language_manager.GetText("OP_ACHIEVEMENT_FIELD_UNLOCK_TITLE"),
             placeholder="例如：僵尸杀手",
+            default_value="",
+        )
+        rarity_input = TextInput(
+            label=self.language_manager.GetText("OP_ACHIEVEMENT_FIELD_RARITY"),
+            placeholder="普通/稀有/史诗/传奇/神话",
+            default_value="普通",
+        )
+        desc_input = TextInput(
+            label=self.language_manager.GetText("OP_ACHIEVEMENT_FIELD_DESCRIPTION"),
+            placeholder="头衔介绍（可空）",
+            default_value="",
+        )
+        money_input = TextInput(
+            label=self.language_manager.GetText("OP_ACHIEVEMENT_FIELD_REWARD_MONEY"),
+            placeholder="0",
+            default_value="0",
+        )
+        items_input = TextInput(
+            label=self.language_manager.GetText("OP_ACHIEVEMENT_FIELD_REWARD_ITEMS"),
+            placeholder=self.language_manager.GetText("OP_ACHIEVEMENT_FIELD_REWARD_ITEMS_HINT"),
             default_value="",
         )
         enabled_input = TextInput(
@@ -611,7 +702,16 @@ class ARCAchievementPlugin(Plugin):
         )
         form = ModalForm(
             title=self.language_manager.GetText("OP_ACHIEVEMENT_CREATE_TITLE"),
-            controls=[name_input, title_input, enabled_input, hidden_input],
+            controls=[
+                name_input,
+                title_input,
+                rarity_input,
+                desc_input,
+                money_input,
+                items_input,
+                enabled_input,
+                hidden_input,
+            ],
             on_close=None,
             on_submit=self._do_op_achievement_create,
         )
@@ -624,22 +724,35 @@ class ARCAchievementPlugin(Plugin):
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_SAVE_FAIL"))
             return self.show_op_achievement_manage_panel(player)
 
-        if not data or len(data) < 3:
+        if not data or len(data) < 2:
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_SAVE_FAIL"))
             return self.show_op_achievement_manage_panel(player)
 
         name = str(data[0] or "").strip()
         unlock_title = str(data[1] or "").strip()
-        enabled = str(data[2] or "1").strip() not in ["0", "false", "False", "off", "OFF"]
+        rarity = str(data[2] or "普通").strip() if len(data) > 2 else "普通"
+        description = str(data[3] or "").strip() if len(data) > 3 else ""
+        try:
+            reward_money = float(data[4]) if len(data) > 4 and str(data[4] or "").strip() else 0.0
+        except (TypeError, ValueError):
+            reward_money = 0.0
+        reward_items = self._parse_reward_items_text(str(data[5]) if len(data) > 5 else "")
+        enabled = True
+        if len(data) > 6:
+            enabled = str(data[6] or "1").strip() not in ["0", "false", "False", "off", "OFF"]
         if_hidden = False
-        if len(data) >= 4:
-            if_hidden = str(data[3] or "0").strip() in ["1", "true", "True", "yes", "YES", "on", "ON"]
+        if len(data) > 7:
+            if_hidden = str(data[7] or "0").strip() in ["1", "true", "True", "yes", "YES", "on", "ON"]
 
         ok = self.achievement_system.create_achievement(
             name=name,
             unlock_title=unlock_title,
             enabled=enabled,
             if_hidden=if_hidden,
+            rarity=rarity,
+            description=description,
+            reward_money=reward_money,
+            reward_items=reward_items,
         )
         if ok:
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_SAVE_SUCCESS"))
@@ -658,17 +771,24 @@ class ARCAchievementPlugin(Plugin):
         current_unlock_title = str(achievement_row.get("unlock_title") or "").strip()
         enabled = int(achievement_row.get("enabled") or 0) == 1
         if_hidden = bool(achievement_row.get("if_hidden", False))
+        rarity = str(achievement_row.get("rarity") or "普通").strip()
+        reward_money = achievement_row.get("reward_money") or 0
+        reward_items = achievement_row.get("reward_items") or []
         condition_rows = self.achievement_system.list_conditions(current_unlock_title)
+        items_preview = self._format_reward_items_text(reward_items) or "无"
 
         panel = ActionForm(
             title=f"编辑成就: {name}",
             content=(
                 f"头衔: {current_unlock_title}\n"
+                f"稀有度: {rarity}\n"
+                f"奖励存款: {reward_money}\n"
+                f"奖励物品: {items_preview}\n"
                 f"状态: {'启用' if enabled else '禁用'}\n"
                 f"隐藏: {'是' if if_hidden else '否'}\n"
                 "逻辑: all\n"
                 f"条件数: {len(condition_rows)}\n"
-                "说明: 全部条件满足后才会解锁。"
+                "说明: 全部条件满足后才会解锁；奖励由成就插件发放。"
             ),
             on_close=None,
         )
@@ -739,6 +859,26 @@ class ARCAchievementPlugin(Plugin):
             placeholder="",
             default_value=str(achievement_row.get("unlock_title") or ""),
         )
+        rarity_input = TextInput(
+            label=self.language_manager.GetText("OP_ACHIEVEMENT_FIELD_RARITY"),
+            placeholder="普通/稀有/史诗/传奇/神话",
+            default_value=str(achievement_row.get("rarity") or "普通"),
+        )
+        desc_input = TextInput(
+            label=self.language_manager.GetText("OP_ACHIEVEMENT_FIELD_DESCRIPTION"),
+            placeholder="头衔介绍（可空）",
+            default_value=str(achievement_row.get("description") or ""),
+        )
+        money_input = TextInput(
+            label=self.language_manager.GetText("OP_ACHIEVEMENT_FIELD_REWARD_MONEY"),
+            placeholder="0",
+            default_value=str(achievement_row.get("reward_money") or 0),
+        )
+        items_input = TextInput(
+            label=self.language_manager.GetText("OP_ACHIEVEMENT_FIELD_REWARD_ITEMS"),
+            placeholder=self.language_manager.GetText("OP_ACHIEVEMENT_FIELD_REWARD_ITEMS_HINT"),
+            default_value=self._format_reward_items_text(achievement_row.get("reward_items")),
+        )
         enabled_input = TextInput(
             label=self.language_manager.GetText("OP_ACHIEVEMENT_FIELD_ENABLED"),
             placeholder="1=启用 0=禁用",
@@ -751,7 +891,16 @@ class ARCAchievementPlugin(Plugin):
         )
         form = ModalForm(
             title=f"编辑成就信息: {unlock_title}",
-            controls=[name_input, title_input, enabled_input, hidden_input],
+            controls=[
+                name_input,
+                title_input,
+                rarity_input,
+                desc_input,
+                money_input,
+                items_input,
+                enabled_input,
+                hidden_input,
+            ],
             on_close=None,
             on_submit=lambda p, json_str, ut=unlock_title: self._do_op_achievement_save_meta(p, json_str, ut),
         )
@@ -764,16 +913,25 @@ class ARCAchievementPlugin(Plugin):
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_SAVE_FAIL"))
             return self.show_op_achievement_edit_panel(player, old_unlock_title)
 
-        if not data or len(data) < 3:
+        if not data or len(data) < 2:
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_SAVE_FAIL"))
             return self.show_op_achievement_edit_panel(player, old_unlock_title)
 
         name = str(data[0] or "").strip()
         new_unlock_title = str(data[1] or "").strip()
-        enabled = str(data[2] or "1").strip() not in ["0", "false", "False", "off", "OFF"]
+        rarity = str(data[2] or "普通").strip() if len(data) > 2 else "普通"
+        description = str(data[3] or "").strip() if len(data) > 3 else ""
+        try:
+            reward_money = float(data[4]) if len(data) > 4 and str(data[4] or "").strip() else 0.0
+        except (TypeError, ValueError):
+            reward_money = 0.0
+        reward_items = self._parse_reward_items_text(str(data[5]) if len(data) > 5 else "")
+        enabled = True
+        if len(data) > 6:
+            enabled = str(data[6] or "1").strip() not in ["0", "false", "False", "off", "OFF"]
         if_hidden = False
-        if len(data) >= 4:
-            if_hidden = str(data[3] or "0").strip() in ["1", "true", "True", "yes", "YES", "on", "ON"]
+        if len(data) > 7:
+            if_hidden = str(data[7] or "0").strip() in ["1", "true", "True", "yes", "YES", "on", "ON"]
 
         ok = self.achievement_system.update_achievement(
             old_unlock_title=old_unlock_title,
@@ -781,6 +939,10 @@ class ARCAchievementPlugin(Plugin):
             new_unlock_title=new_unlock_title,
             enabled=enabled,
             if_hidden=if_hidden,
+            rarity=rarity,
+            description=description,
+            reward_money=reward_money,
+            reward_items=reward_items,
         )
         if ok:
             player.send_message(self.language_manager.GetText("OP_ACHIEVEMENT_SAVE_SUCCESS"))
