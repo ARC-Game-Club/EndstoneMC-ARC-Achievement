@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from endstone import Player
-from endstone.event import event_handler, ActorDeathEvent, BlockBreakEvent, BlockPlaceEvent, PlayerDeathEvent
 from endstone.form import ActionForm, ModalForm, TextInput, Dropdown
 from endstone.plugin import Plugin
 from endstone.command import Command, CommandSender
@@ -17,16 +16,6 @@ from endstone_arc_achievement.LanguageManager import LanguageManager
 
 MAIN_PATH = "plugins/ARCAchievement"
 LEGACY_JSON = Path("plugins/ARCCore/achievements.json")
-
-
-def normalize_entity_type_id(entity_type: str) -> str:
-    s = str(entity_type or "").strip()
-    if not s:
-        return ""
-    if ":" in s:
-        ns, name = s.split(":", 1)
-        return f"{ns.lower()}:{name.lower()}"
-    return s.lower()
 
 
 class _TitleBridge:
@@ -136,7 +125,6 @@ class ARCAchievementPlugin(Plugin):
         self.language_manager = LanguageManager("ZH-CN")
 
     def on_enable(self) -> None:
-        self.register_events(self)
         self.arc_core = self.server.plugin_manager.get_plugin("arc_core")
         if self.arc_core is None:
             self.logger.error("[ARCAchievement] 未找到 arc_core，成就插件已禁用相关功能。")
@@ -171,6 +159,57 @@ class ARCAchievementPlugin(Plugin):
         self.logger.info(
             "[ARCAchievement] 已启用；活动统计经 arc_core API 查询，解锁标记存 plugins/ARCAchievement/achievement.db。"
         )
+
+    def api_notify_activity_stat(self, xuid: str, stat_kind: str, target_id: str) -> None:
+        """
+        由 arc_core 在活动统计写入后调用。
+        stat_kind: kill | break | place
+        target_id: 生物类型 ID 或方块 ID（已由核心规范化）
+        """
+        if self.achievement_system is None:
+            return
+        xuid_s = str(xuid or "").strip()
+        kind = str(stat_kind or "").strip().lower()
+        target = str(target_id or "").strip()
+        if not xuid_s or not kind or not target:
+            return
+        player = self._find_online_player_by_xuid(xuid_s)
+        if player is None:
+            return
+        try:
+            if kind == "kill":
+                self.achievement_system.record_kill(player, target)
+            elif kind == "break":
+                self.achievement_system.record_block_break(player, target)
+            elif kind == "place":
+                self.achievement_system.record_block_place(player, target)
+        except Exception as e:
+            try:
+                self.logger.error(f"[ARCAchievement] api_notify_activity_stat error: {e}")
+            except Exception:
+                pass
+
+    def _find_online_player_by_xuid(self, xuid: str):
+        xuid_s = str(xuid or "").strip()
+        if not xuid_s:
+            return None
+        arc = self._get_arc()
+        if arc is not None:
+            find_fn = getattr(arc, "_find_online_player_by_xuid", None)
+            if callable(find_fn):
+                try:
+                    found = find_fn(xuid_s)
+                    if found is not None:
+                        return found
+                except Exception:
+                    pass
+        try:
+            for player in self.server.online_players or []:
+                if str(getattr(player, "xuid", "") or "").strip() == xuid_s:
+                    return player
+        except Exception:
+            pass
+        return None
 
     def on_disable(self) -> None:
         self.logger.info("[ARCAchievement] on_disable")
@@ -308,120 +347,6 @@ class ARCAchievementPlugin(Plugin):
                     return
         except Exception:
             pass
-
-    def _schedule_activity_check(self, callback) -> None:
-        """延迟 0 tick，确保同 tick 内弧光核心已写入活动统计。"""
-        try:
-            self.server.scheduler.run_task(self, callback, delay=0)
-        except Exception:
-            try:
-                callback()
-            except Exception:
-                pass
-
-    @event_handler
-    def on_actor_death(self, event: ActorDeathEvent):
-        if self.achievement_system is None:
-            return
-        try:
-            damage_source = getattr(event, "damage_source", None)
-            killer = getattr(damage_source, "actor", None) if damage_source is not None else None
-            if killer is None:
-                return
-            if getattr(killer, "type", None) != "minecraft:player":
-                return
-            dead_actor = getattr(event, "actor", None)
-            if dead_actor is None:
-                return
-            if getattr(dead_actor, "type", None) == "minecraft:player":
-                return
-            dead_type = getattr(dead_actor, "type", None) or getattr(dead_actor, "identifier", None) or ""
-            if not dead_type:
-                return
-            dead_type_key = normalize_entity_type_id(str(dead_type))
-            self._schedule_activity_check(
-                lambda k=killer, t=dead_type_key: self.achievement_system.record_kill(k, t)
-            )
-        except Exception as e:
-            try:
-                self.logger.error(f"[ARCAchievement] on_actor_death error: {e}")
-            except Exception:
-                pass
-
-    @event_handler
-    def on_player_death(self, event: PlayerDeathEvent):
-        if self.achievement_system is None:
-            return
-        try:
-            damage_source = getattr(event, "damage_source", None)
-            killer = getattr(damage_source, "actor", None) if damage_source is not None else None
-            if killer is None:
-                for attr in ("killer", "damager"):
-                    killer = getattr(event, attr, None)
-                    if killer is not None:
-                        break
-            if killer is None:
-                return
-            if not (
-                isinstance(killer, Player)
-                or getattr(killer, "type", None) == "minecraft:player"
-            ):
-                return
-            self._schedule_activity_check(
-                lambda k=killer: self.achievement_system.record_kill(k, "minecraft:player")
-            )
-        except Exception as e:
-            try:
-                self.logger.error(f"[ARCAchievement] on_player_death error: {e}")
-            except Exception:
-                pass
-
-    @event_handler
-    def on_block_break(self, event: BlockBreakEvent):
-        if self.achievement_system is None:
-            return
-        try:
-            if getattr(event, "is_cancelled", False):
-                return
-            player = getattr(event, "player", None)
-            block = getattr(event, "block", None)
-            if player is None or block is None:
-                return
-            block_id = getattr(block, "type", None) or getattr(block, "type_id", None) or getattr(block, "identifier", None) or ""
-            if block_id:
-                bid = normalize_entity_type_id(str(block_id))
-                self._schedule_activity_check(
-                    lambda p=player, b=bid: self.achievement_system.record_block_break(p, b)
-                )
-        except Exception:
-            pass
-
-    @event_handler
-    def on_block_place(self, event: BlockPlaceEvent):
-        if self.achievement_system is None:
-            return
-        try:
-            if getattr(event, "is_cancelled", False):
-                return
-            player = getattr(event, "player", None)
-            if player is None:
-                return
-            placed = getattr(event, "block_placed", None) or getattr(event, "block", None)
-            block_id = ""
-            if placed is not None:
-                block_id = (
-                    getattr(placed, "type", None)
-                    or getattr(placed, "identifier", None)
-                    or ""
-                )
-            if block_id:
-                bid = normalize_entity_type_id(str(block_id))
-                self._schedule_activity_check(
-                    lambda p=player, b=bid: self.achievement_system.record_block_place(p, b)
-                )
-        except Exception:
-            pass
-
 
     def _announce_achievement_unlock(self, player: Player, achievement_name: str, unlock_title: str) -> None:
         """
