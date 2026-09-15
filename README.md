@@ -1,11 +1,11 @@
 # EndStone ARC Achievement / 弧光成就
 
-[![Codacy Grade](https://app.codacy.com/project/badge/Grade/4c54f9ddc5e54246aea130507b71321e)](https://app.codacy.com/gh/ARC-Minecraft/EndstoneMC-ARC-Achievement/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
-[![版本](https://img.shields.io/badge/版本-0.1.9-blue.svg)](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Achievement)
+[![Codacy Grade](https://app.codacy.com/project/badge/Grade/4c54f9ddc5e54246aea130507b71321e)](https://app.codacy.com/gh/ARC-Game-Club/EndstoneMC-ARC-Achievement/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
+[![版本](https://img.shields.io/badge/版本-0.1.9-blue.svg)](https://github.com/ARC-Game-Club/EndstoneMC-ARC-Achievement)
 [![EndStone](https://img.shields.io/badge/EndStone-0.10+-green.svg)](https://github.com/EndstoneMC/endstone)
-[![依赖](https://img.shields.io/badge/依赖-arc__core-orange.svg)](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Core-Plugin)
+[![依赖](https://img.shields.io/badge/依赖-arc__core-orange.svg)](https://github.com/ARC-Game-Club/EndstoneMC-ARC-Core-Plugin)
 
-弧光系列成就插件：可配置击杀类成就、玩家进度面板与 OP 管理界面。头衔注册/解锁走 **[弧光核心](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Core-Plugin)**（`arc_core`）；金钱/物品奖励由本插件配置并发放。
+弧光系列成就插件：可配置击杀类成就、玩家进度面板与 OP 管理界面。头衔注册/解锁走 **[弧光核心](https://github.com/ARC-Game-Club/EndstoneMC-ARC-Core-Plugin)**（`arc_core`）；金钱/物品奖励由本插件配置并发放。
 
 ## 命名约定
 

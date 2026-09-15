@@ -15,7 +15,7 @@ license = { file = "LICENSE" }
 keywords = ["endstone", "plugin", "achievement", "arc"]
 
 [project.urls]
-Homepage = "https://github.com/ARC-Minecraft/EndstoneMC-ARC-Achievement"
+Homepage = "https://github.com/ARC-Game-Club/EndstoneMC-ARC-Achievement"
 
 [project.entry-points."endstone"]
 arc_achievement = "endstone_arc_achievement:ARCAchievementPlugin"
